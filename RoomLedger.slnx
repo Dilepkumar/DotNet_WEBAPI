@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="RoomLedger.API/RoomLedger.API.csproj" />
+  <Project Path="RoomLedger.Application/RoomLedger.Application.csproj" />
+  <Project Path="RoomLedger.Domain/RoomLedger.Domain.csproj" />
+  <Project Path="RoomLedger.Infrastructure/RoomLedger.Infrastructure.csproj" />
+</Solution>
