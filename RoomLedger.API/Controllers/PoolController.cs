@@ -16,6 +16,10 @@ public class PoolController : ControllerBase
 
     private int Me => int.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
 
+    [HttpGet("balance")]
+    public async Task<IActionResult> Balance(int groupId)
+    => Ok(await _pool.GetPoolBalanceAsync(groupId, Me));
+
     [HttpPost("contribute")]
     public async Task<IActionResult> Contribute(int groupId, ContributeDto dto)
     {
@@ -55,5 +59,35 @@ public class PoolController : ControllerBase
         var (ok, msg) = await _pool.VoidExpenseAsync(groupId, Me, expenseId, dto);
         return ok ? Ok(new { message = msg }) : BadRequest(new { message = msg });
     }
+    [HttpGet("pending-contributions")]
+    public async Task<IActionResult> Pending(int groupId)
+    => Ok(await _pool.GetPendingContributionsAsync(groupId, Me));
 
+    [HttpPost("contributions/{contributionId:int}/approve")]
+    public async Task<IActionResult> Approve(int groupId, int contributionId, ApproveContributionDto dto)
+    {
+        var (ok, msg) = await _pool.ApproveContributionAsync(groupId, Me, contributionId);
+        return ok ? Ok(new { message = msg }) : BadRequest(new { message = msg });
+    }
+
+    [HttpPost("contributions/{contributionId:int}/reject")]
+    public async Task<IActionResult> Reject(int groupId, int contributionId, RejectContributionDto dto)
+    {
+        var (ok, msg) = await _pool.RejectContributionAsync(groupId, Me, contributionId, dto);
+        return ok ? Ok(new { message = msg }) : BadRequest(new { message = msg });
+    }
+
+    [HttpPost("shares")]
+    public async Task<IActionResult> SetShares(int groupId, SetSharesDto dto)
+    {
+        var (ok, msg) = await _pool.SetSharesAsync(groupId, Me, dto);
+        return ok ? Ok(new { message = msg }) : BadRequest(new { message = msg });
+    }
+
+    [HttpPut("target")]
+    public async Task<IActionResult> SetTarget(int groupId, SetTargetDto dto)
+    {
+        var (ok, msg) = await _pool.SetTargetAsync(groupId, Me, dto.MonthlyPoolTarget);
+        return ok ? Ok(new { message = msg }) : BadRequest(new { message = msg });
+    }
 }

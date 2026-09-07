@@ -1,4 +1,5 @@
-﻿using RoomLedger.Domain.Entities;
+﻿using RoomLedger.Domain.Common;
+using RoomLedger.Domain.Entities;
 using System.ComponentModel.DataAnnotations.Schema;
 
 public class PoolContribution : BaseEntity
@@ -12,4 +13,8 @@ public class PoolContribution : BaseEntity
 
     [ForeignKey("UserId")]
     public User User { get; set; } = default!;
+    public ContributionStatus Status { get; set; } = ContributionStatus.Pending;
+    public int? ApprovedByUserId { get; set; }
+    public DateTime? ApprovedAt { get; set; }
+    public string? RejectReason { get; set; }
 }

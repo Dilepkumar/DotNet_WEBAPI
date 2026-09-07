@@ -199,12 +199,30 @@ public class IouService
     public async Task<object> GetMyBalanceAsync(int groupId, int userId)
     {
         var matrix = await GetDebtMatrixAsync(groupId);
+
+        var iOwe = matrix.Where(d => d.DebtorId == userId).ToList();
+        var owedToMe = matrix.Where(d => d.CreditorId == userId).ToList();
+
+        var ids = iOwe.Select(d => d.CreditorId)
+            .Concat(owedToMe.Select(d => d.DebtorId))
+            .Distinct().ToList();
+        var names = await _db.Users
+            .Where(u => ids.Contains(u.Id))
+            .ToDictionaryAsync(u => u.Id, u => u.FullName);
+
         return new
         {
-            iOwe = matrix.Where(d => d.DebtorId == userId)
-                         .Select(d => new { toUserId = d.CreditorId, d.Amount }),
-            owedToMe = matrix.Where(d => d.CreditorId == userId)
-                             .Select(d => new { fromUserId = d.DebtorId, d.Amount })
+            netBalance = owedToMe.Sum(d => d.Amount) - iOwe.Sum(d => d.Amount),
+            iOwe = iOwe.Select(d => new {
+                toUserId = d.CreditorId,
+                toUserName = names.GetValueOrDefault(d.CreditorId, "Unknown"),
+                amount = d.Amount
+            }),
+            owedToMe = owedToMe.Select(d => new {
+                fromUserId = d.DebtorId,
+                fromUserName = names.GetValueOrDefault(d.DebtorId, "Unknown"),
+                amount = d.Amount
+            })
         };
     }
     public async Task<(bool ok, string message)> VoidExpenseAsync(int groupId, int userId, int expenseId, VoidDto dto)

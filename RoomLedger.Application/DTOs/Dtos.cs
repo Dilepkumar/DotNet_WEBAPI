@@ -1,8 +1,17 @@
-﻿namespace RoomLedger.Application.DTOs;
+﻿using System.ComponentModel.DataAnnotations;
 
-public record RegisterDto(string FullName, string Email, string Password);
+namespace RoomLedger.Application.DTOs;
+public record RegisterDto(
+    [Required, MinLength(2)] string FullName,
+    [Required, EmailAddress] string Email,
+    [Required, RegularExpression(@"^(\+91[\s-]?)?[6-9]\d{9}$", ErrorMessage = "Invalid Indian mobile number")]
+    string Phone,
+    [Required, MinLength(8)] string Password);
+
 public record VerifyOtpDto(string Email, string Code);
-public record LoginDto(string Email, string Password);
+public record LoginDto(
+    [Required] string Identifier,
+    [Required] string Password);
 public record CreateGroupDto(string GroupName, decimal MonthlyPoolTarget);
 public record JoinGroupDto(string Code);
 public record BillDto(string BillName, decimal Amount, DateOnly BillingMonth, int DueDayOfMonth);
@@ -24,9 +33,14 @@ public record DashboardDto(
     decimal PoolBalance,
     decimal UnpaidBillTotal,
     decimal OutstandingIouDebt,
-    decimal OutstandingIouCredit,     // what others owe YOU
+    decimal OutstandingIouCredit,
     int UnreadNotifications,
     List<UpcomingBillDto> UpcomingBills);
 
 public record UpcomingBillDto(string BillName, decimal ShareAmount, int DueDay, bool IsPaid);
 public record NotificationDto(int Id, string Title, string Message, string Type, bool IsRead, DateTime CreatedAt);
+public record ApproveContributionDto(string? Note);
+public record RejectContributionDto(string Reason);
+public record SetSharesDto(List<MemberShareDto> Shares);
+public record MemberShareDto(int? UserId, string? AliasName, decimal MonthlyShare);
+public record SetTargetDto(decimal MonthlyPoolTarget);

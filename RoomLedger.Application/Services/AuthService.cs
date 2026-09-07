@@ -9,6 +9,7 @@ using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace RoomLedger.Application.Services;
 
@@ -52,14 +53,24 @@ public class AuthService
 
     public async Task<(bool ok, string message, string? devOtp)> RegisterAsync(RegisterDto dto)
     {
-        if (await _db.Users.AnyAsync(u => u.Email == dto.Email))
-            return (false, "Email already registered", null);
+        var email = dto.Email.Trim().ToLower();
+        var phone = "+91" + Regex.Replace(dto.Phone, @"[\s\-+]", "");
 
-        _db.Users.Add(new User { FullName = dto.FullName, Email = dto.Email,
-                                 PasswordHash = _hasher.Hash(dto.Password) });
+        if (await _db.Users.AnyAsync(u => u.Email == email))
+            return (false, "Email already registered", null);
+        if (await _db.Users.AnyAsync(u => u.Phone == phone))
+            return (false, "Phone number already registered", null);
+
+        _db.Users.Add(new User
+        {
+            FullName = dto.FullName.Trim(),
+            Email = email,
+            Phone = phone,                               
+            PasswordHash = _hasher.Hash(dto.Password)
+        });
         await _db.SaveChangesAsync();
 
-        var devOtp = await CreateOtpAsync(dto.Email, OtpPurpose.Registration);
+        var devOtp = await CreateOtpAsync(email, OtpPurpose.Registration);
         return (true, "OTP sent to email", devOtp);
     }
 
@@ -80,15 +91,25 @@ public class AuthService
 
     public async Task<(bool ok, string message, object? result)> LoginAsync(LoginDto dto)
     {
-        var user = await _db.Users.FirstOrDefaultAsync(u => u.Email == dto.Email);
+        var id = dto.Identifier.Trim().ToLower();
+
+        // match by email OR phone (handles +91 / bare 10-digit)
+        var user = await _db.Users.FirstOrDefaultAsync(u =>
+            u.Email == id ||
+            u.Phone == id ||
+            u.Phone == "+91" + id ||
+            u.Phone!.Replace("+91", "") == id);
+
         if (user == null || !_hasher.Verify(dto.Password, user.PasswordHash))
-            return (false, "Invalid credentials", null);
+            return (false, "Invalid email/phone or password", null);
         if (!user.IsEmailVerified)
             return (false, "Verify your email first", null);
 
+        var (refreshRaw, _) = await IssueRefreshTokenAsync(user.Id);
         return (true, "Login successful", new
         {
             token = _jwt.CreateToken(user.Id, user.Email),
+            refreshToken = refreshRaw,
             user = new { id = user.Id, fullName = user.FullName, email = user.Email }
         });
     }
