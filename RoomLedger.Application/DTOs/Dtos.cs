@@ -1,4 +1,4 @@
-﻿using System.ComponentModel.DataAnnotations;
+using System.ComponentModel.DataAnnotations;
 
 namespace RoomLedger.Application.DTOs;
 public record RegisterDto(
@@ -6,7 +6,8 @@ public record RegisterDto(
     [Required, EmailAddress] string Email,
     [Required, RegularExpression(@"^(\+91[\s-]?)?[6-9]\d{9}$", ErrorMessage = "Invalid Indian mobile number")]
     string Phone,
-    [Required, MinLength(8)] string Password);
+    [Required, MinLength(8)] string Password,
+    string? RoomInviteCode = null);
 
 public record VerifyOtpDto(string Email, string Code);
 public record LoginDto(

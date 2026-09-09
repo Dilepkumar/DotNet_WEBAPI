@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using RoomLedger.Application.DTOs;
 using RoomLedger.Application.Services;
@@ -17,8 +17,8 @@ public class AuthController : ControllerBase
     [HttpPost("register")]
     public async Task<IActionResult> Register(RegisterDto dto)
     {
-        var (ok, msg, devOtp) = await _auth.RegisterAsync(dto);
-        return ok ? Ok(new { message = msg, devOtp }) : BadRequest(new { message = msg });
+        var (ok, msg, result) = await _auth.RegisterAsync(dto);
+        return ok ? Ok(result) : BadRequest(new { message = msg });
     }
 
     [HttpPost("verify-otp")]

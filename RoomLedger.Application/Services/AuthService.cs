@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.IdentityModel.Tokens;
 using RoomLedger.Application.Common.Interfaces;
@@ -51,7 +51,7 @@ public class AuthService
         return (raw, rt); //raw goes to client; only the hash is stored
     }
 
-    public async Task<(bool ok, string message, string? devOtp)> RegisterAsync(RegisterDto dto)
+    public async Task<(bool ok, string message, object? result)> RegisterAsync(RegisterDto dto)
     {
         var email = dto.Email.Trim().ToLower();
         var phone = "+91" + Regex.Replace(dto.Phone, @"[\s\-+]", "");
@@ -61,17 +61,35 @@ public class AuthService
         if (await _db.Users.AnyAsync(u => u.Phone == phone))
             return (false, "Phone number already registered", null);
 
-        _db.Users.Add(new User
+        var user = new User
         {
             FullName = dto.FullName.Trim(),
             Email = email,
-            Phone = phone,                               
-            PasswordHash = _hasher.Hash(dto.Password)
-        });
+            Phone = phone,
+            PasswordHash = _hasher.Hash(dto.Password),
+            IsEmailVerified = true
+        };
+        _db.Users.Add(user);
         await _db.SaveChangesAsync();
 
-        var devOtp = await CreateOtpAsync(email, OtpPurpose.Registration);
-        return (true, "OTP sent to email", devOtp);
+        if (!string.IsNullOrWhiteSpace(dto.RoomInviteCode))
+        {
+            var code = dto.RoomInviteCode.Trim();
+            var group = await _db.Groups.FirstOrDefaultAsync(g => g.InviteCode == code);
+            if (group != null)
+            {
+                _db.GroupMembers.Add(new GroupMember { GroupId = group.Id, UserId = user.Id });
+                await _db.SaveChangesAsync();
+            }
+        }
+
+        var (refreshRaw, _) = await IssueRefreshTokenAsync(user.Id);
+        return (true, "Registration successful", new
+        {
+            token = _jwt.CreateToken(user.Id, user.Email),
+            refreshToken = refreshRaw,
+            user = new { id = user.Id, fullName = user.FullName, email = user.Email, phone = user.Phone }
+        });
     }
     public async Task<(bool ok, string message)> VerifyOtpAsync(VerifyOtpDto dto, OtpPurpose purpose = OtpPurpose.Registration)
     {
@@ -107,14 +125,17 @@ public class AuthService
         if (user == null || !_hasher.Verify(dto.Password, user.PasswordHash))
             return (false, "Invalid email/phone or password", null);
         if (!user.IsEmailVerified)
-            return (false, "Verify your email first", null);
+        {
+            user.IsEmailVerified = true;
+            await _db.SaveChangesAsync();
+        }
 
         var (refreshRaw, _) = await IssueRefreshTokenAsync(user.Id);
         return (true, "Login successful", new
         {
             token = _jwt.CreateToken(user.Id, user.Email),
             refreshToken = refreshRaw,
-            user = new { id = user.Id, fullName = user.FullName, email = user.Email }
+            user = new { id = user.Id, fullName = user.FullName, email = user.Email, phone = user.Phone }
         });
     }
 
