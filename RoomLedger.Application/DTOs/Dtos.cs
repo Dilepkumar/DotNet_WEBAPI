@@ -44,3 +44,16 @@ public record RejectContributionDto(string Reason);
 public record SetSharesDto(List<MemberShareDto> Shares);
 public record MemberShareDto(int? UserId, string? AliasName, decimal MonthlyShare);
 public record SetTargetDto(decimal MonthlyPoolTarget);
+public record ForgotPasswordDto([Required, EmailAddress] string Email);
+public record ResetPasswordDto(
+    [Required, EmailAddress] string Email,
+    [Required] string Code,
+    [Required, MinLength(8)] string NewPassword);
+public record UpdateProfileDto(
+    [Required, MinLength(2)] string FullName,
+    DateTime? DateOfBirth,
+    string? Gender);
+public record ChangePasswordDto(
+    [Required] string CurrentPassword,
+    [Required, MinLength(8)] string NewPassword);
+

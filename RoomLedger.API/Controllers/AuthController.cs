@@ -50,4 +50,17 @@ public class AuthController : ControllerBase
         var (ok, msg) = await _auth.LogoutAsync(me);
         return Ok(new { message = msg });
     }
+    [HttpPost("forgot-password")]
+    public async Task<IActionResult> ForgotPassword(ForgotPasswordDto dto)
+    {
+        var (ok, msg, devOtp) = await _auth.ForgotPasswordAsync(dto);
+        return Ok(new { message = msg, devOtp });
+    }
+
+    [HttpPost("reset-password")]
+    public async Task<IActionResult> ResetPassword(ResetPasswordDto dto)
+    {
+        var (ok, msg) = await _auth.ResetPasswordAsync(dto);
+        return ok ? Ok(new { message = msg }) : BadRequest(new { message = msg });
+    }
 }

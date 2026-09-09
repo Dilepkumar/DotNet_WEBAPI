@@ -73,20 +73,24 @@ public class AuthService
         var devOtp = await CreateOtpAsync(email, OtpPurpose.Registration);
         return (true, "OTP sent to email", devOtp);
     }
-
-    public async Task<(bool ok, string message)> VerifyOtpAsync(VerifyOtpDto dto)
+    public async Task<(bool ok, string message)> VerifyOtpAsync(VerifyOtpDto dto, OtpPurpose purpose = OtpPurpose.Registration)
     {
         var otp = await _db.OtpCodes.FirstOrDefaultAsync(o =>
             o.Email == dto.Email && o.Code == dto.Code &&
-            o.Purpose == OtpPurpose.Registration && !o.IsUsed &&
+            o.Purpose == purpose && !o.IsUsed &&
             o.ExpiresAt > DateTime.UtcNow);
         if (otp == null) return (false, "Invalid or expired OTP");
 
         otp.IsUsed = true;
-        var user = await _db.Users.FirstAsync(u => u.Email == dto.Email);
-        user.IsEmailVerified = true;
+
+        if (purpose == OtpPurpose.Registration)
+        {
+            var user = await _db.Users.FirstAsync(u => u.Email == dto.Email);
+            user.IsEmailVerified = true;
+        }
+
         await _db.SaveChangesAsync();
-        return (true, "Email verified");
+        return (true, "OTP verified");
     }
 
     public async Task<(bool ok, string message, object? result)> LoginAsync(LoginDto dto)
@@ -184,5 +188,31 @@ public class AuthService
 
         return new JwtSecurityTokenHandler().WriteToken(token);
     }
+    public async Task<(bool ok, string message, string? devOtp)> ForgotPasswordAsync(ForgotPasswordDto dto)
+    {
+        var email = dto.Email.Trim().ToLower();
+        var user = await _db.Users.FirstOrDefaultAsync(u => u.Email == email);
 
+        // ⚠️ same response whether or not the account exists (prevents user enumeration)
+        if (user == null)
+            return (true, "If that email exists, a reset code has been sent", null);
+
+        var devOtp = await CreateOtpAsync(email, OtpPurpose.PasswordReset);   // ← reuse your OTP creator
+        return (true, "If that email exists, a reset code has been sent", devOtp);
+    }
+    public async Task<(bool ok, string message)> ResetPasswordAsync(ResetPasswordDto dto)
+    {
+        var email = dto.Email.Trim().ToLower();
+
+        var (ok, msg) = await VerifyOtpAsync(new VerifyOtpDto(email, dto.Code), OtpPurpose.PasswordReset);
+        if (!ok) return (false, msg);
+
+        var user = await _db.Users.FirstOrDefaultAsync(u => u.Email == email);
+        if (user == null) return (false, "Account not found");
+
+        user.PasswordHash = _hasher.Hash(dto.NewPassword);
+        await _db.SaveChangesAsync();
+
+        return (true, "Password updated — you can now log in");
+    }
 }
