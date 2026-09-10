@@ -76,6 +76,7 @@ app.UseSwagger();
 app.UseSwaggerUI();
 
 app.UseCors("app");          // ← must come BEFORE UseAuthentication
+app.UseStaticFiles();
 
 app.UseAuthentication();
 app.UseAuthorization();

@@ -1,4 +1,4 @@
-﻿using System.Security.Claims;
+using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -67,12 +67,13 @@ public class GroupsController : ControllerBase
     [HttpPost("join")]
     public async Task<IActionResult> Join(JoinGroupDto dto)
     {
-        var g = await _db.Groups.FirstOrDefaultAsync(x => x.InviteCode == dto.Code);
-        if (g == null) return BadRequest(new { message = "Invalid code" });
+        var code = dto.Code.Trim();
+        var g = await _db.Groups.FirstOrDefaultAsync(x => x.InviteCode.ToLower() == code.ToLower());
+        if (g == null) return BadRequest(new { message = "Invalid invite code" });
 
         if (!await _db.GroupMembers.AnyAsync(m => m.GroupId == g.Id && m.UserId == Me))
         {
-            _db.GroupMembers.Add(new GroupMember { GroupId = g.Id, UserId = Me });
+            _db.GroupMembers.Add(new GroupMember { GroupId = g.Id, UserId = Me, Role = MemberRole.Member });
             await _db.SaveChangesAsync();
         }
         return Ok(new { groupId = g.Id, groupName = g.GroupName });

@@ -1,4 +1,4 @@
-﻿using System.Security.Claims;
+using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using RoomLedger.Application.DTOs;
@@ -30,12 +30,35 @@ public class BillsController : ControllerBase
         return ok ? Ok(new { message = msg }) : BadRequest(new { message = msg });
     }
 
+    [HttpGet]
+    public async Task<IActionResult> GetBills(int groupId, [FromQuery] string? month)
+    {
+        var m = string.IsNullOrWhiteSpace(month) ? DateTime.UtcNow.ToString("yyyy-MM") : month;
+        return Ok(await _bills.GetMonthAsync(groupId, m));
+    }
+
     [HttpGet("{billingMonth}")]        // e.g. GET api/groups/1/bills/2026-09
     public async Task<IActionResult> Month(int groupId, string billingMonth)
         => Ok(await _bills.GetMonthAsync(groupId, billingMonth));
 
+    [HttpPost("generate-next-month")]
+    public async Task<IActionResult> GenerateNextMonth(int groupId)
+    {
+        var nextMonth = DateTime.UtcNow.AddMonths(1).ToString("yyyy-MM");
+        var (ok, msg) = await _bills.GenerateSplitsAsync(groupId, Me, nextMonth);
+        return ok ? Ok(new { message = msg }) : BadRequest(new { message = msg });
+    }
+
     [HttpPost("splits/{splitId:int}/toggle-paid")]
     public async Task<IActionResult> Toggle(int groupId, int splitId)
+    {
+        var (ok, msg) = await _bills.TogglePaidAsync(groupId, Me, splitId);
+        return ok ? Ok(new { message = msg }) : BadRequest(new { message = msg });
+    }
+
+    [HttpPut("splits/{splitId:int}/mark-paid")]
+    [HttpPost("splits/{splitId:int}/mark-paid")]
+    public async Task<IActionResult> MarkPaid(int groupId, int splitId)
     {
         var (ok, msg) = await _bills.TogglePaidAsync(groupId, Me, splitId);
         return ok ? Ok(new { message = msg }) : BadRequest(new { message = msg });

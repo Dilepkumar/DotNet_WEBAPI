@@ -1,4 +1,4 @@
-﻿using System.Security.Claims;
+using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using RoomLedger.Application.DTOs;
@@ -17,9 +17,13 @@ public class IouController : ControllerBase
     private int Me => int.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
 
     [HttpPost("expenses")]
-    public async Task<IActionResult> Add(int groupId, IouExpenseDto dto)
+    public async Task<IActionResult> Add(int groupId, FlexibleIouExpenseDto dto)
     {
-        var (ok, msg) = await _iou.AddExpenseAsync(groupId, Me, dto);
+        var participants = dto.Participants ?? (dto.SharedWith != null
+            ? dto.SharedWith.Select(id => new IouParticipantDto(int.Parse(id), null)).ToList()
+            : new List<IouParticipantDto>());
+        var expDto = new IouExpenseDto(dto.Description, dto.Amount, participants, dto.ExpenseDate);
+        var (ok, msg) = await _iou.AddExpenseAsync(groupId, Me, expDto);
         return ok ? Ok(new { message = msg }) : BadRequest(new { message = msg });
     }
 
@@ -35,10 +39,13 @@ public class IouController : ControllerBase
     public async Task<IActionResult> MyBalance(int groupId)
         => Ok(await _iou.GetMyBalanceAsync(groupId, Me));
 
+    [HttpPost("settle-up")]
     [HttpPost("settle")]
-    public async Task<IActionResult> Settle(int groupId, SettleUpDto dto)
+    public async Task<IActionResult> Settle(int groupId, FlexibleSettleDto dto)
     {
-        var (ok, msg) = await _iou.SettleUpAsync(groupId, Me, dto);
+        var payee = dto.PayeeId ?? dto.ToUserId ?? 0;
+        var settleDto = new SettleUpDto(payee, dto.Amount, dto.TransactionRef ?? dto.Note);
+        var (ok, msg) = await _iou.SettleUpAsync(groupId, Me, settleDto);
         return ok ? Ok(new { message = msg }) : BadRequest(new { message = msg });
     }
 

@@ -1,4 +1,4 @@
-﻿using System.Security.Claims;
+using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using RoomLedger.Application.DTOs;
@@ -34,6 +34,25 @@ public class PoolController : ControllerBase
         return ok ? Ok(new { message = msg }) : BadRequest(new { message = msg });
     }
 
+    [HttpPost("receipt")]
+    public async Task<IActionResult> UploadReceipt(int groupId, IFormFile file, [FromServices] IWebHostEnvironment env)
+    {
+        if (file == null || file.Length == 0) return BadRequest(new { message = "No file uploaded" });
+        if (file.Length > 5 * 1024 * 1024) return BadRequest(new { message = "Max 5 MB" });
+        var allowed = new[] { "image/jpeg", "image/png", "image/webp", "image/jpg" };
+        if (!allowed.Contains(file.ContentType.ToLower())) return BadRequest(new { message = "Only JPG/PNG/WebP images allowed" });
+
+        var ext = Path.GetExtension(file.FileName).ToLowerInvariant();
+        var fileName = $"receipt_{groupId}_{DateTime.UtcNow.Ticks}{ext}";
+        var folder = Path.Combine(env.WebRootPath ?? "wwwroot", "receipts");
+        Directory.CreateDirectory(folder);
+
+        await using var stream = System.IO.File.Create(Path.Combine(folder, fileName));
+        await file.CopyToAsync(stream);
+
+        return Ok(new { receiptUrl = $"/receipts/{fileName}" });
+    }
+
     [HttpGet("overview")]
     public async Task<IActionResult> Overview(int groupId)
         => Ok(await _pool.GetOverviewAsync(groupId));
@@ -64,7 +83,7 @@ public class PoolController : ControllerBase
     => Ok(await _pool.GetPendingContributionsAsync(groupId, Me));
 
     [HttpPost("contributions/{contributionId:int}/approve")]
-    public async Task<IActionResult> Approve(int groupId, int contributionId, ApproveContributionDto dto)
+    public async Task<IActionResult> Approve(int groupId, int contributionId, [FromBody] ApproveContributionDto? dto = null)
     {
         var (ok, msg) = await _pool.ApproveContributionAsync(groupId, Me, contributionId);
         return ok ? Ok(new { message = msg }) : BadRequest(new { message = msg });

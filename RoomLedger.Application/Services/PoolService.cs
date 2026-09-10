@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
 using RoomLedger.Application.Common.Interfaces;
 using RoomLedger.Application.DTOs;
 using RoomLedger.Domain.Common;
@@ -47,36 +47,56 @@ public class PoolService
     {
         if (!await IsActiveMemberAsync(groupId, userId))
             return (false, "You are not an active member of this group");
-        if (dto.Items == null || dto.Items.Count == 0)
-            return (false, "Add at least one item");
+        if (string.IsNullOrWhiteSpace(dto.Description))
+            return (false, "Please provide an expense description");
 
-        var total = dto.Items.Sum(i => i.Amount);
+        var items = dto.Items != null && dto.Items.Count > 0
+            ? dto.Items
+            : new List<PoolItemDto>();
+
+        var total = items.Sum(i => i.Amount);
         if (total <= 0)
             return (false, "Expense total must be greater than zero");
 
-        // STRICT check per your prompt: Total must equal sum of line items
-        if (total != dto.Items.Sum(i => i.Amount))
-            return (false, "Item amounts don't add up"); // (defensive; same expression)
+        int? paidByUserId = null;
+        string payerName = "Central Pool";
+        if (dto.PayerType == "me" || dto.PaidByUserId.HasValue)
+        {
+            paidByUserId = dto.PaidByUserId ?? userId;
+            var payer = await _db.Users.FindAsync(paidByUserId.Value);
+            payerName = payer?.FullName ?? "Roommate";
+        }
 
         var expense = new PoolExpense
         {
             GroupId = groupId,
             RecordedByUserId = userId,
-            Description = dto.Description,
+            PaidByUserId = paidByUserId,
+            PayerName = payerName,
+            Description = dto.Description.Trim(),
             TotalAmount = total,
             ExpenseDate = DateOnly.TryParse(dto.ExpenseDate, out var d)
-                ? d : DateOnly.FromDateTime(DateTime.UtcNow)
+                ? d : DateOnly.FromDateTime(DateTime.UtcNow),
+            ReceiptUrl = dto.ReceiptUrl,
+            Category = dto.Category,
+            IsReimbursed = true
         };
-        expense.Items = dto.Items.Select(i => new ExpenseItem
+
+        expense.Items = items.Select(i => new ExpenseItem
         {
             ExpenseCategoryId = i.CategoryId,
-            ItemName = i.ItemName,
+            ItemName = string.IsNullOrWhiteSpace(i.ItemName) ? dto.Description.Trim() : i.ItemName.Trim(),
             Amount = i.Amount
         }).ToList();
 
         _db.PoolExpenses.Add(expense);
         await _db.SaveChangesAsync();
-        return (true, "Expense logged");
+
+        var successMsg = paidByUserId.HasValue
+            ? $"Expense logged: Reimbursed ₹{total} to {payerName} from pool fund"
+            : $"Expense of ₹{total} logged from Central Pool";
+
+        return (true, successMsg);
     }
 
     // ───────────── POOL OVERVIEW: balance + recent activity ─────────────
@@ -300,31 +320,106 @@ public class PoolService
                  rejectReason = c.RejectReason
              }).ToListAsync();
 
-        // Recent expenses — NO nav on PoolExpense → join names in memory
+        // Recent expenses — include itemized receipt items & payer/receipt metadata
         var recentExpensesRaw = await _db.PoolExpenses
             .Where(e => e.GroupId == groupId && !e.IsVoided)
-            .OrderByDescending(e => e.CreatedAt).Take(10)
-            .Select(e => new { e.Id, e.Description, e.TotalAmount, e.ExpenseDate, e.RecordedByUserId })
+            .OrderByDescending(e => e.CreatedAt).Take(15)
+            .Select(e => new
+            {
+                e.Id,
+                e.Description,
+                e.TotalAmount,
+                e.ExpenseDate,
+                e.RecordedByUserId,
+                e.PaidByUserId,
+                e.PayerName,
+                e.ReceiptUrl,
+                e.Category,
+                e.IsReimbursed,
+                Items = e.Items.Select(i => new { i.Id, i.ItemName, i.Amount, i.ExpenseCategoryId }).ToList()
+            })
             .ToListAsync();
 
-        var recorderIds = recentExpensesRaw.Select(e => e.RecordedByUserId).Distinct().ToList();
-        var recorderNames = await _db.Users.Where(u => recorderIds.Contains(u.Id))
+        var involvedUserIds = recentExpensesRaw
+            .Select(e => e.RecordedByUserId)
+            .Concat(recentExpensesRaw.Where(e => e.PaidByUserId.HasValue).Select(e => e.PaidByUserId!.Value))
+            .Distinct()
+            .ToList();
+
+        var userNameMap = await _db.Users.Where(u => involvedUserIds.Contains(u.Id))
             .ToDictionaryAsync(u => u.Id, u => u.FullName);
 
-        var recentExpenses = recentExpensesRaw.Select(e => new
+        var recentExpenses = recentExpensesRaw.Select(e =>
         {
-            id = "e" + e.Id,
-            type = "Expense",
-            description = e.Description,
-            userName = recorderNames.GetValueOrDefault(e.RecordedByUserId, "Unknown"),
-            date = e.ExpenseDate.ToString("yyyy-MM-dd"),
-            amount = e.TotalAmount,
-            status = "Approved",
-            approvedBy = (string?)null,
-            rejectReason = (string?)null
+            var recorder = userNameMap.GetValueOrDefault(e.RecordedByUserId, "Roommate");
+            var payer = e.PaidByUserId.HasValue
+                ? userNameMap.GetValueOrDefault(e.PaidByUserId.Value, e.PayerName ?? "Roommate")
+                : "Central Pool";
+
+            var userDisplay = e.PaidByUserId.HasValue
+                ? $"{payer} (Paid own money · Reimbursed from Pool)"
+                : $"Central Pool (Added by {recorder})";
+
+            return new
+            {
+                id = "e" + e.Id,
+                type = "Expense",
+                description = e.Description,
+                userName = userDisplay,
+                date = e.ExpenseDate.ToString("yyyy-MM-dd"),
+                amount = e.TotalAmount,
+                status = e.PaidByUserId.HasValue ? "Reimbursed ✓" : "Approved",
+                approvedBy = (string?)null,
+                rejectReason = (string?)null,
+                payerType = e.PaidByUserId.HasValue ? "member" : "pool",
+                payerName = payer,
+                recorderName = recorder,
+                receiptUrl = e.ReceiptUrl,
+                category = e.Category,
+                isReimbursed = e.IsReimbursed,
+                items = e.Items
+            };
         }).ToList();
 
-        var recentTransactions = recentContribs.Concat(recentExpenses).OrderByDescending(t => t.date).Take(20).ToList();
+        var recentTransactions = recentContribs.Select(c => new
+        {
+            c.id,
+            c.type,
+            c.description,
+            c.userName,
+            c.date,
+            c.amount,
+            c.status,
+            c.approvedBy,
+            c.rejectReason,
+            payerType = "member",
+            payerName = c.userName,
+            recorderName = c.userName,
+            receiptUrl = (string?)null,
+            category = (string?)null,
+            isReimbursed = true,
+            items = (object?)null
+        })
+        .Concat(recentExpenses.Select(e => new
+        {
+            e.id,
+            e.type,
+            e.description,
+            e.userName,
+            e.date,
+            e.amount,
+            e.status,
+            e.approvedBy,
+            e.rejectReason,
+            e.payerType,
+            e.payerName,
+            e.recorderName,
+            e.receiptUrl,
+            e.category,
+            e.isReimbursed,
+            items = (object?)e.items
+        }))
+        .OrderByDescending(t => t.date).Take(20).ToList();
 
         var isAdmin = await _db.GroupMembers.AnyAsync(m => m.GroupId == groupId
                                 && m.UserId == userId && m.Role == MemberRole.Admin && m.Status == MemberStatus.Active);
