@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
 using RoomLedger.Domain.Entities;
 
 namespace RoomLedger.Application.Common.Interfaces;
@@ -25,5 +25,6 @@ public interface IApplicationDbContext
     public DbSet<IouItem> IouItems { get; }
     public DbSet<IouItemAssignment> IouItemAssignments { get; }
     public DbSet<Notification> Notifications { get; }
+    DbSet<EmailTemplate> EmailTemplates { get; }
     Task<int> SaveChangesAsync(CancellationToken ct = default);
 }

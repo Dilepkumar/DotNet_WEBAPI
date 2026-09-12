@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
 using RoomLedger.Application.Common.Interfaces;
 using RoomLedger.Domain.Entities;
 
@@ -28,7 +28,8 @@ public class ApplicationDbContext : DbContext, IApplicationDbContext
     public DbSet<IouItem> IouItems => Set<IouItem>();
     public DbSet<IouItemAssignment> IouItemAssignments => Set<IouItemAssignment>();
     public DbSet<Notification> Notifications => Set<Notification>();
+    public DbSet<EmailTemplate> EmailTemplates => Set<EmailTemplate>();
 
-    public Task<int> SaveChangesAsync(CancellationToken ct = default)
+    public override Task<int> SaveChangesAsync(CancellationToken ct = default)
         => base.SaveChangesAsync(ct);
 }

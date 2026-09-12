@@ -1,8 +1,8 @@
+using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using RoomLedger.Application.DTOs;
 using RoomLedger.Application.Services;
-using System.Security.Claims;
 using static RoomLedger.Application.Services.AuthService;
 
 namespace RoomLedger.API.Controllers;
@@ -24,8 +24,15 @@ public class AuthController : ControllerBase
     [HttpPost("verify-otp")]
     public async Task<IActionResult> VerifyOtp(VerifyOtpDto dto)
     {
-        var (ok, msg) = await _auth.VerifyOtpAsync(dto);
-        return ok ? Ok(new { message = msg }) : BadRequest(new { message = msg });
+        var (ok, msg, result) = await _auth.VerifyOtpAsync(dto);
+        return ok ? Ok(result ?? new { message = msg }) : BadRequest(new { message = msg });
+    }
+
+    [HttpPost("request-otp")]
+    public async Task<IActionResult> RequestOtp(RequestOtpDto dto)
+    {
+        var (ok, msg, devOtp) = await _auth.RequestOtpAsync(dto.Email, dto.Purpose);
+        return ok ? Ok(new { message = msg, devOtp }) : BadRequest(new { message = msg });
     }
 
     [HttpPost("login")]
@@ -53,8 +60,8 @@ public class AuthController : ControllerBase
     [HttpPost("forgot-password")]
     public async Task<IActionResult> ForgotPassword(ForgotPasswordDto dto)
     {
-        var (ok, msg, devOtp) = await _auth.ForgotPasswordAsync(dto);
-        return Ok(new { message = msg, devOtp });
+        var (ok, msg, _) = await _auth.ForgotPasswordAsync(dto);
+        return Ok(new { message = msg });
     }
 
     [HttpPost("reset-password")]

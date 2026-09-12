@@ -10,6 +10,7 @@ public record RegisterDto(
     string? RoomInviteCode = null);
 
 public record VerifyOtpDto(string Email, string Code);
+public record RequestOtpDto(string Email, string? Purpose = null);
 public record LoginDto(
     [Required] string Identifier,
     [Required] string Password);

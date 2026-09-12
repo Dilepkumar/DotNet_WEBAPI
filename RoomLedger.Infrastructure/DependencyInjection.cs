@@ -1,7 +1,8 @@
-﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using RoomLedger.Application.Common.Interfaces;
+using RoomLedger.Infrastructure.Configuration;
 using RoomLedger.Infrastructure.Persistence;
 using RoomLedger.Infrastructure.Services;
 
@@ -17,9 +18,12 @@ public static class DependencyInjection
         services.AddScoped<IApplicationDbContext>(sp =>
             sp.GetRequiredService<ApplicationDbContext>());
 
+        services.Configure<SmtpSettings>(options => config.GetSection("Smtp").Bind(options));
+
         services.AddScoped<IPasswordHasher, PasswordHasher>();
         services.AddScoped<IJwtService, JwtService>();
         services.AddScoped<IEmailService, SmtpEmailService>();
+        services.AddScoped<IEmailTemplateService, EmailTemplateService>();
 
         return services;
     }

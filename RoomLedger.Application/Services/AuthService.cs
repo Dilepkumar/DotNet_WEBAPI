@@ -19,14 +19,16 @@ public class AuthService
     private readonly IPasswordHasher _hasher;
     private readonly IJwtService _jwt;
     private readonly IEmailService _email;
+    private readonly IEmailTemplateService _templateService;
     private readonly IConfiguration _config;
 
-    public AuthService(IApplicationDbContext db, IPasswordHasher hasher, IJwtService jwt, IEmailService email, IConfiguration config)
+    public AuthService(IApplicationDbContext db, IPasswordHasher hasher, IJwtService jwt, IEmailService email, IEmailTemplateService templateService, IConfiguration config)
     {
         _db = db;
         _hasher = hasher;
         _jwt = jwt;
         _email = email;
+        _templateService = templateService;
         _config = config;
     }
     public record RefreshRequestDto(string RefreshToken);
@@ -67,7 +69,7 @@ public class AuthService
             Email = email,
             Phone = phone,
             PasswordHash = _hasher.Hash(dto.Password),
-            IsEmailVerified = true
+            IsEmailVerified = false
         };
         _db.Users.Add(user);
         await _db.SaveChangesAsync();
@@ -83,32 +85,49 @@ public class AuthService
             }
         }
 
+        var devOtp = await CreateOtpAsync(user.Email, OtpPurpose.Registration);
+
         var (refreshRaw, _) = await IssueRefreshTokenAsync(user.Id);
         return (true, "Registration successful", new
         {
             token = _jwt.CreateToken(user.Id, user.Email),
             refreshToken = refreshRaw,
-            user = new { id = user.Id, fullName = user.FullName, email = user.Email, phone = user.Phone }
+            user = new { id = user.Id, fullName = user.FullName, email = user.Email, phone = user.Phone },
+            devOtp = devOtp
         });
     }
-    public async Task<(bool ok, string message)> VerifyOtpAsync(VerifyOtpDto dto, OtpPurpose purpose = OtpPurpose.Registration)
+    public async Task<(bool ok, string message, object? result)> VerifyOtpAsync(VerifyOtpDto dto, OtpPurpose purpose = OtpPurpose.Registration)
     {
+        var email = dto.Email.Trim().ToLower();
         var otp = await _db.OtpCodes.FirstOrDefaultAsync(o =>
-            o.Email == dto.Email && o.Code == dto.Code &&
+            o.Email == email && o.Code == dto.Code &&
             o.Purpose == purpose && !o.IsUsed &&
             o.ExpiresAt > DateTime.UtcNow);
-        if (otp == null) return (false, "Invalid or expired OTP");
+        if (otp == null) return (false, "Invalid or expired OTP", null);
 
         otp.IsUsed = true;
 
-        if (purpose == OtpPurpose.Registration)
+        var user = await _db.Users.FirstOrDefaultAsync(u => u.Email == email);
+        if (user != null && purpose == OtpPurpose.Registration)
         {
-            var user = await _db.Users.FirstAsync(u => u.Email == dto.Email);
             user.IsEmailVerified = true;
         }
 
         await _db.SaveChangesAsync();
-        return (true, "OTP verified");
+
+        object? result = null;
+        if (user != null)
+        {
+            var (refreshRaw, _) = await IssueRefreshTokenAsync(user.Id);
+            result = new
+            {
+                token = _jwt.CreateToken(user.Id, user.Email),
+                refreshToken = refreshRaw,
+                user = new { id = user.Id, fullName = user.FullName, email = user.Email, phone = user.Phone }
+            };
+        }
+
+        return (true, "OTP verified", result);
     }
 
     public async Task<(bool ok, string message, object? result)> LoginAsync(LoginDto dto)
@@ -139,14 +158,47 @@ public class AuthService
         });
     }
 
+    public async Task<(bool ok, string message, string? devOtp)> RequestOtpAsync(string email, string? purposeStr)
+    {
+        var cleanEmail = email.Trim().ToLower();
+        var purpose = OtpPurpose.Registration;
+        if (Enum.TryParse<OtpPurpose>(purposeStr, true, out var parsed))
+        {
+            purpose = parsed;
+        }
+
+        var code = await CreateOtpAsync(cleanEmail, purpose);
+        return (true, "OTP code sent to email", code);
+    }
+
     private async Task<string> CreateOtpAsync(string email, OtpPurpose purpose)
     {
         var code = Random.Shared.Next(100000, 999999).ToString();
         _db.OtpCodes.Add(new OtpCode { Email = email, Code = code, Purpose = purpose,
                                        ExpiresAt = DateTime.UtcNow.AddMinutes(10) });
         await _db.SaveChangesAsync();
-        await _email.SendAsync(email, "RoomLedger OTP", $"Your code: {code}");
-        return code; // returned for dev testing only (SmtpEmailService logs to console in dev)
+
+        var templateKey = purpose switch
+        {
+            OtpPurpose.Registration => "REGISTRATION_OTP",
+            OtpPurpose.PasswordReset => "PASSWORD_RESET_OTP",
+            OtpPurpose.Login => "LOGIN_OTP",
+            _ => "REGISTRATION_OTP"
+        };
+
+        var user = await _db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Email == email);
+        var userName = !string.IsNullOrWhiteSpace(user?.FullName) ? user.FullName : email.Split('@')[0];
+
+        var placeholders = new Dictionary<string, string>
+        {
+            { "{{OTP_CODE}}", code },
+            { "{{USER_NAME}}", userName },
+            { "{{EXPIRY_MINUTES}}", "10" },
+            { "{{APP_NAME}}", "RoomLedger" }
+        };
+
+        await _templateService.SendTemplatedEmailAsync(email, templateKey, placeholders);
+        return code;
     }
     public async Task<(bool ok, object result)> RefreshAsync(RefreshRequestDto dto)
     {
@@ -225,7 +277,7 @@ public class AuthService
     {
         var email = dto.Email.Trim().ToLower();
 
-        var (ok, msg) = await VerifyOtpAsync(new VerifyOtpDto(email, dto.Code), OtpPurpose.PasswordReset);
+        var (ok, msg, _) = await VerifyOtpAsync(new VerifyOtpDto(email, dto.Code), OtpPurpose.PasswordReset);
         if (!ok) return (false, msg);
 
         var user = await _db.Users.FirstOrDefaultAsync(u => u.Email == email);
