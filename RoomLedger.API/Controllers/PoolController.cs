@@ -109,4 +109,8 @@ public class PoolController : ControllerBase
         var (ok, msg) = await _pool.SetTargetAsync(groupId, Me, dto.MonthlyPoolTarget);
         return ok ? Ok(new { message = msg }) : BadRequest(new { message = msg });
     }
+
+    [HttpGet("history")]
+    public async Task<IActionResult> History(int groupId, [FromQuery] string? period, [FromQuery] string? fromDate, [FromQuery] string? toDate)
+        => Ok(await _pool.GetHistoryAsync(groupId, period, fromDate, toDate));
 }

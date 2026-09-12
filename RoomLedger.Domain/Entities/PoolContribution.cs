@@ -1,4 +1,4 @@
-﻿using RoomLedger.Domain.Common;
+using RoomLedger.Domain.Common;
 using RoomLedger.Domain.Entities;
 using System.ComponentModel.DataAnnotations.Schema;
 
@@ -10,6 +10,7 @@ public class PoolContribution : BaseEntity
     public DateOnly ContributedOn { get; set; }
     public string? PeriodMonth { get; set; }
     public string? TransactionRef { get; set; }
+    public string? Message { get; set; }
 
     [ForeignKey("UserId")]
     public User User { get; set; } = default!;

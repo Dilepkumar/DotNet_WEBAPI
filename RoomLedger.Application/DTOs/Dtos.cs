@@ -16,7 +16,12 @@ public record LoginDto(
 public record CreateGroupDto(string GroupName, decimal MonthlyPoolTarget);
 public record JoinGroupDto(string Code);
 public record BillDto(string BillName, decimal Amount, DateOnly BillingMonth, int DueDayOfMonth);
-public record ContributeDto(decimal Amount, string? TransactionRef);
+public record ContributeDto(
+    decimal Amount,
+    string? TransactionRef = null,
+    string? Message = null,
+    List<int>? MemberUserIds = null,
+    string? Mode = null);
 public record PoolItemDto(int? CategoryId, string ItemName, decimal Amount);
 public record PoolExpenseDto(
     string Description, 

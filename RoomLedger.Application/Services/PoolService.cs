@@ -24,22 +24,63 @@ public class PoolService
             return (false, "You are not an active member of this group");
 
         var isAdmin = await IsAdminAsync(groupId, userId);
+        var currentMonth = DateTime.UtcNow.ToString("yyyy-MM");
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var note = !string.IsNullOrWhiteSpace(dto.Message) ? dto.Message.Trim() : dto.TransactionRef?.Trim();
 
-        _db.PoolContributions.Add(new PoolContribution
+        // If multiple members specified (e.g. ₹500 × 5 members or ₹8,000 / 5 members)
+        if (dto.MemberUserIds != null && dto.MemberUserIds.Count > 0)
         {
-            GroupId = groupId,
-            UserId = userId,
-            Amount = dto.Amount,
-            ContributedOn = DateOnly.FromDateTime(DateTime.UtcNow),
-            PeriodMonth = DateTime.UtcNow.ToString("yyyy-MM"),
-            TransactionRef = dto.TransactionRef,
-            Status = isAdmin ? ContributionStatus.Approved : ContributionStatus.Pending,
-            ApprovedByUserId = isAdmin ? userId : null,
-            ApprovedAt = isAdmin ? DateTime.UtcNow : null
-        });
-        await _db.SaveChangesAsync();
+            var memberIds = dto.MemberUserIds.Distinct().ToList();
+            var count = memberIds.Count;
 
-        return (true, isAdmin ? "Contribution recorded" : "Contribution submitted — waiting for admin approval");
+            decimal perPersonAmount = (dto.Mode == "total_split" && count > 0)
+                ? Math.Round(dto.Amount / count, 2)
+                : dto.Amount;
+
+            decimal totalAdded = perPersonAmount * count;
+
+            foreach (var mId in memberIds)
+            {
+                _db.PoolContributions.Add(new PoolContribution
+                {
+                    GroupId = groupId,
+                    UserId = mId,
+                    Amount = perPersonAmount,
+                    ContributedOn = today,
+                    PeriodMonth = currentMonth,
+                    TransactionRef = note,
+                    Message = note,
+                    Status = isAdmin ? ContributionStatus.Approved : ContributionStatus.Pending,
+                    ApprovedByUserId = isAdmin ? userId : null,
+                    ApprovedAt = isAdmin ? DateTime.UtcNow : null
+                });
+            }
+
+            await _db.SaveChangesAsync();
+            return (true, isAdmin
+                ? $"Added ₹{totalAdded:N0} to Pool ({count} members × ₹{perPersonAmount:N0})"
+                : $"Submitted contribution for {count} members — waiting for admin approval");
+        }
+        else
+        {
+            _db.PoolContributions.Add(new PoolContribution
+            {
+                GroupId = groupId,
+                UserId = userId,
+                Amount = dto.Amount,
+                ContributedOn = today,
+                PeriodMonth = currentMonth,
+                TransactionRef = note,
+                Message = note,
+                Status = isAdmin ? ContributionStatus.Approved : ContributionStatus.Pending,
+                ApprovedByUserId = isAdmin ? userId : null,
+                ApprovedAt = isAdmin ? DateTime.UtcNow : null
+            });
+
+            await _db.SaveChangesAsync();
+            return (true, isAdmin ? $"Added ₹{dto.Amount:N0} to Pool" : "Contribution submitted — waiting for admin approval");
+        }
     }
 
     // ───────────── LOG ITEMIZED POOL EXPENSE (strict line-sum validation) ─────────────
@@ -82,9 +123,34 @@ public class PoolService
             IsReimbursed = true
         };
 
+        int? categoryId = null;
+        if (!string.IsNullOrWhiteSpace(dto.Category))
+        {
+            var catName = dto.Category.Trim();
+            var matchedCat = await _db.ExpenseCategories
+                .FirstOrDefaultAsync(c => c.Name.ToLower() == catName.ToLower() ||
+                                          catName.ToLower().Contains(c.Name.ToLower()) ||
+                                          c.Name.ToLower().Contains(catName.ToLower()));
+            if (matchedCat != null)
+            {
+                categoryId = matchedCat.Id;
+            }
+            else
+            {
+                matchedCat = new ExpenseCategory
+                {
+                    Name = catName,
+                    Icon = "🛒"
+                };
+                _db.ExpenseCategories.Add(matchedCat);
+                await _db.SaveChangesAsync();
+                categoryId = matchedCat.Id;
+            }
+        }
+
         expense.Items = items.Select(i => new ExpenseItem
         {
-            ExpenseCategoryId = i.CategoryId,
+            ExpenseCategoryId = i.CategoryId ?? categoryId,
             ItemName = string.IsNullOrWhiteSpace(i.ItemName) ? dto.Description.Trim() : i.ItemName.Trim(),
             Amount = i.Amount
         }).ToList();
@@ -310,7 +376,9 @@ public class PoolService
              {
                  id = "c" + c.Id,
                  type = "Contribution",
-                 description = "Pool contribution" + (c.TransactionRef != null ? $" ({c.TransactionRef})" : ""),
+                 description = !string.IsNullOrWhiteSpace(c.Message)
+                     ? c.Message
+                     : ("Pool contribution" + (c.TransactionRef != null ? $" ({c.TransactionRef})" : "")),
                  userName = c.User.FullName,
                  date = c.ContributedOn.ToString("yyyy-MM-dd"),
                  amount = c.Amount,
@@ -421,6 +489,96 @@ public class PoolService
         }))
         .OrderByDescending(t => t.date).Take(20).ToList();
 
+        // Dynamic Category Breakdown & Out-of-Pocket Reimbursements
+        var allExpenses = await _db.PoolExpenses
+            .Where(e => e.GroupId == groupId && !e.IsVoided)
+            .Select(e => new
+            {
+                e.Id,
+                e.TotalAmount,
+                e.Category,
+                e.PaidByUserId,
+                e.PayerName,
+                e.IsReimbursed,
+                Items = e.Items.Select(i => new
+                {
+                    i.Id,
+                    i.ItemName,
+                    i.Amount,
+                    i.ExpenseCategoryId
+                }).ToList()
+            })
+            .ToListAsync();
+
+        var totalExpenseAmount = allExpenses.Sum(e => e.TotalAmount);
+        var categoryBreakdown = allExpenses
+            .GroupBy(e => string.IsNullOrWhiteSpace(e.Category) ? "Other" : e.Category.Trim())
+            .Select(g =>
+            {
+                var catTotal = g.Sum(x => x.TotalAmount);
+                var catItems = g.SelectMany(x => x.Items)
+                    .GroupBy(i => string.IsNullOrWhiteSpace(i.ItemName) ? "Item" : i.ItemName.Trim())
+                    .Select(ig => new
+                    {
+                        itemName = ig.Key,
+                        total = ig.Sum(i => i.Amount),
+                        count = ig.Count()
+                    })
+                    .OrderByDescending(i => i.total)
+                    .ToList();
+
+                return new
+                {
+                    category = g.Key,
+                    total = catTotal,
+                    percentage = totalExpenseAmount > 0 ? Math.Round((catTotal / totalExpenseAmount) * 100, 1) : 0,
+                    itemCount = catItems.Count,
+                    items = catItems
+                };
+            })
+            .OrderByDescending(x => x.total)
+            .ToList();
+
+        // Overall item-wise tracking across all pool expenses
+        var itemBreakdown = allExpenses
+            .SelectMany(e => e.Items.Select(i => new
+            {
+                ItemName = string.IsNullOrWhiteSpace(i.ItemName) ? (e.Category ?? "General") : i.ItemName.Trim(),
+                i.Amount,
+                Category = string.IsNullOrWhiteSpace(e.Category) ? "Other" : e.Category.Trim()
+            }))
+            .GroupBy(i => i.ItemName)
+            .Select(g => new
+            {
+                itemName = g.Key,
+                category = g.First().Category,
+                total = g.Sum(i => i.Amount),
+                count = g.Count()
+            })
+            .OrderByDescending(i => i.total)
+            .ToList();
+
+        // Out-of-Pocket Reimbursement Summary
+        var outOfPocketSummary = allExpenses
+            .Where(e => e.PaidByUserId.HasValue)
+            .GroupBy(e => e.PaidByUserId!.Value)
+            .Select(g =>
+            {
+                var pUserId = g.Key;
+                var pName = userNameMap.GetValueOrDefault(pUserId, g.First().PayerName ?? "Roommate");
+                var totalPaid = g.Sum(x => x.TotalAmount);
+                return new
+                {
+                    userId = pUserId,
+                    userName = pName,
+                    totalPaid,
+                    expenseCount = g.Count(),
+                    status = "Reimbursed from Pool ✓"
+                };
+            })
+            .OrderByDescending(x => x.totalPaid)
+            .ToList();
+
         var isAdmin = await _db.GroupMembers.AnyAsync(m => m.GroupId == groupId
                                 && m.UserId == userId && m.Role == MemberRole.Admin && m.Status == MemberStatus.Active);
 
@@ -438,13 +596,16 @@ public class PoolService
 
         return new
         {
-            isAdmin,                      // ← new
-            pendingItems,                 // ← new (null for non-admins)
+            isAdmin,
+            pendingItems,
             currentBalance = contributed - spent,
             monthlyTarget = target,
             totalContributions = contributed,
             totalSpent = spent,
             memberStatuses,
+            categoryBreakdown,
+            itemBreakdown,
+            outOfPocketSummary,
             recentTransactions
         };
     }
@@ -542,8 +703,184 @@ public class PoolService
         var g = await _db.Groups.FirstOrDefaultAsync(x => x.Id == groupId);
         if (g == null) return (false, "Group not found");
         g.MonthlyPoolTarget = target;
+
+        // Distribute target equally to all active members
+        var activeMembers = await _db.GroupMembers
+            .Where(m => m.GroupId == groupId && m.Status == MemberStatus.Active)
+            .ToListAsync();
+
+        if (activeMembers.Count > 0)
+        {
+            var sharePerMember = Math.Round(target / activeMembers.Count, 2);
+            foreach (var m in activeMembers)
+            {
+                m.MonthlyPoolShare = sharePerMember;
+            }
+        }
+
         await _db.SaveChangesAsync();
-        return (true, $"Monthly target set to ₹{target}");
+        var perMember = activeMembers.Count > 0 ? Math.Round(target / activeMembers.Count, 2) : 0m;
+        return (true, $"Monthly target set to ₹{target:N0} (₹{perMember:N0}/member)");
+    }
+
+    // ───────────── LEDGER HISTORY (daily, weekly, monthly, custom) ─────────────
+    public async Task<object> GetHistoryAsync(int groupId, string? period, string? fromDateStr, string? toDateStr)
+    {
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        DateOnly? fromDate = null;
+        DateOnly? toDate = null;
+
+        if (period == "daily")
+        {
+            fromDate = today;
+            toDate = today;
+        }
+        else if (period == "weekly")
+        {
+            fromDate = today.AddDays(-7);
+            toDate = today;
+        }
+        else if (period == "monthly")
+        {
+            fromDate = new DateOnly(today.Year, today.Month, 1);
+            toDate = today;
+        }
+        else if (period == "custom")
+        {
+            if (DateOnly.TryParse(fromDateStr, out var fd)) fromDate = fd;
+            if (DateOnly.TryParse(toDateStr, out var td)) toDate = td;
+        }
+
+        // Fetch contributions
+        var contribQuery = _db.PoolContributions
+            .Where(c => c.GroupId == groupId && c.Status == ContributionStatus.Approved);
+
+        if (fromDate.HasValue) contribQuery = contribQuery.Where(c => c.ContributedOn >= fromDate.Value);
+        if (toDate.HasValue) contribQuery = contribQuery.Where(c => c.ContributedOn <= toDate.Value);
+
+        var contribsRaw = await contribQuery
+            .OrderByDescending(c => c.ContributedOn).ThenByDescending(c => c.Id)
+            .Select(c => new
+            {
+                id = "c" + c.Id,
+                type = "Contribution",
+                description = !string.IsNullOrWhiteSpace(c.Message)
+                    ? c.Message
+                    : ("Pool contribution" + (c.TransactionRef != null ? $" ({c.TransactionRef})" : "")),
+                userName = c.User.FullName,
+                date = c.ContributedOn.ToString("yyyy-MM-dd"),
+                amount = c.Amount,
+                status = "Approved",
+                payerType = "member",
+                payerName = c.User.FullName,
+                recorderName = c.User.FullName,
+                receiptUrl = (string?)null,
+                category = (string?)null,
+                isReimbursed = true
+            })
+            .ToListAsync();
+
+        // Fetch expenses
+        var expenseQuery = _db.PoolExpenses
+            .Where(e => e.GroupId == groupId && !e.IsVoided);
+
+        if (fromDate.HasValue) expenseQuery = expenseQuery.Where(e => e.ExpenseDate >= fromDate.Value);
+        if (toDate.HasValue) expenseQuery = expenseQuery.Where(e => e.ExpenseDate <= toDate.Value);
+
+        var expensesRaw = await expenseQuery
+            .OrderByDescending(e => e.ExpenseDate).ThenByDescending(e => e.Id)
+            .Select(e => new
+            {
+                e.Id,
+                e.Description,
+                e.TotalAmount,
+                e.ExpenseDate,
+                e.RecordedByUserId,
+                e.PaidByUserId,
+                e.PayerName,
+                e.ReceiptUrl,
+                e.Category,
+                e.IsReimbursed,
+                Items = e.Items.Select(i => new { i.Id, i.ItemName, i.Amount }).ToList()
+            })
+            .ToListAsync();
+
+        var involvedUserIds = expensesRaw
+            .Select(e => e.RecordedByUserId)
+            .Concat(expensesRaw.Where(e => e.PaidByUserId.HasValue).Select(e => e.PaidByUserId!.Value))
+            .Distinct()
+            .ToList();
+
+        var userNameMap = await _db.Users
+            .Where(u => involvedUserIds.Contains(u.Id))
+            .ToDictionaryAsync(u => u.Id, u => u.FullName);
+
+        var mappedExpenses = expensesRaw.Select(e =>
+        {
+            var recorder = userNameMap.GetValueOrDefault(e.RecordedByUserId, "Roommate");
+            var payer = e.PaidByUserId.HasValue
+                ? userNameMap.GetValueOrDefault(e.PaidByUserId.Value, e.PayerName ?? "Roommate")
+                : "Central Pool";
+
+            var userDisplay = e.PaidByUserId.HasValue
+                ? $"{payer} (Paid own money · Reimbursed from Pool)"
+                : $"Central Pool (Added by {recorder})";
+
+            return new
+            {
+                id = "e" + e.Id,
+                type = "Expense",
+                description = e.Description,
+                userName = userDisplay,
+                date = e.ExpenseDate.ToString("yyyy-MM-dd"),
+                amount = e.TotalAmount,
+                status = e.PaidByUserId.HasValue ? "Reimbursed ✓" : "Approved",
+                payerType = e.PaidByUserId.HasValue ? "member" : "pool",
+                payerName = payer,
+                recorderName = recorder,
+                receiptUrl = e.ReceiptUrl,
+                category = e.Category,
+                isReimbursed = e.IsReimbursed,
+                items = (object?)e.Items
+            };
+        }).ToList();
+
+        var allTransactions = contribsRaw.Select(c => new
+        {
+            c.id,
+            c.type,
+            c.description,
+            c.userName,
+            c.date,
+            c.amount,
+            c.status,
+            c.payerType,
+            c.payerName,
+            c.recorderName,
+            c.receiptUrl,
+            c.category,
+            c.isReimbursed,
+            items = (object?)null
+        })
+        .Concat(mappedExpenses)
+        .OrderByDescending(t => t.date)
+        .ThenByDescending(t => t.id)
+        .ToList();
+
+        var totalIn = contribsRaw.Sum(c => c.amount);
+        var totalOut = mappedExpenses.Sum(e => e.amount);
+
+        return new
+        {
+            period = period ?? "monthly",
+            fromDate = fromDate?.ToString("yyyy-MM-dd"),
+            toDate = toDate?.ToString("yyyy-MM-dd"),
+            totalIn,
+            totalOut,
+            netChange = totalIn - totalOut,
+            totalCount = allTransactions.Count,
+            transactions = allTransactions
+        };
     }
 
 }
