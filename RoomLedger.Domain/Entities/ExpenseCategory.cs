@@ -1,4 +1,4 @@
-﻿namespace RoomLedger.Domain.Entities;
+namespace RoomLedger.Domain.Entities;
 
 public class ExpenseCategory : BaseEntity
 {

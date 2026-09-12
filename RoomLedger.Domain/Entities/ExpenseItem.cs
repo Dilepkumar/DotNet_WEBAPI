@@ -1,4 +1,4 @@
-﻿using System.ComponentModel.DataAnnotations.Schema;
+using System.ComponentModel.DataAnnotations.Schema;
 
 namespace RoomLedger.Domain.Entities;
 
@@ -8,6 +8,7 @@ public class ExpenseItem
     public int PoolExpenseId { get; set; }
     public int? ExpenseCategoryId { get; set; }
     public string ItemName { get; set; } = default!;
+    public decimal Quantity { get; set; } = 1;
     public decimal Amount { get; set; }
     [ForeignKey("PoolExpenseId")]
     public PoolExpense PoolExpense { get; set; } = default!;

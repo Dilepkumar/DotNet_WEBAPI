@@ -14,7 +14,7 @@ public record RequestOtpDto(string Email, string? Purpose = null);
 public record LoginDto(
     [Required] string Identifier,
     [Required] string Password);
-public record CreateGroupDto(string GroupName, decimal MonthlyPoolTarget);
+public record CreateGroupDto(string GroupName, decimal MonthlyPoolTarget, string? Address = null);
 public record JoinGroupDto(string Code);
 public record BillDto(string BillName, decimal Amount, DateOnly BillingMonth, int DueDayOfMonth);
 public record ContributeDto(
@@ -23,7 +23,7 @@ public record ContributeDto(
     string? Message = null,
     List<int>? MemberUserIds = null,
     string? Mode = null);
-public record PoolItemDto(int? CategoryId, string ItemName, decimal Amount);
+public record PoolItemDto(int? CategoryId, string ItemName, decimal Amount, decimal? Quantity = 1);
 public record PoolExpenseDto(
     string Description, 
     string ExpenseDate, 
@@ -46,13 +46,55 @@ public record IouExpenseDto(string Description, decimal Amount, List<IouParticip
 public record FlexibleIouExpenseDto(string Description, decimal Amount, List<IouParticipantDto>? Participants, List<string>? SharedWith, string? ExpenseDate);
 public record IouItemInputDto(string ItemName, decimal Amount, List<int> EaterUserIds);
 public record IouItemizedDto(string Description, decimal Amount, string? ExpenseDate, List<IouItemInputDto> Items);
+
+public record DashboardCategoryDto(
+    int? CategoryId,
+    string CategoryName,
+    string Icon,
+    decimal TotalAmount,
+    int ItemCount,
+    double Percentage);
+
+public record DashboardExpenseItemDto(
+    string ItemName,
+    decimal Amount,
+    decimal Quantity = 1);
+
+public record DashboardExpenseDto(
+    int Id,
+    string Description,
+    decimal TotalAmount,
+    string ExpenseDate,
+    string? PaidByName,
+    string? PayerType,
+    string? ReceiptUrl,
+    List<DashboardExpenseItemDto> Items);
+
+public record DashboardIouDebtDto(
+    int DebtorId,
+    string DebtorName,
+    int CreditorId,
+    string CreditorName,
+    decimal Amount,
+    string? CreditorUpiId);
+
 public record DashboardDto(
+    string GroupName,
+    string? GroupAddress,
+    int MemberCount,
+    decimal MonthlyPoolTarget,
     decimal PoolBalance,
+    decimal PoolSpentThisMonth,
+    double PoolRemainingPercentage,
+    int PendingBillsCount,
     decimal UnpaidBillTotal,
     decimal OutstandingIouDebt,
     decimal OutstandingIouCredit,
     int UnreadNotifications,
-    List<UpcomingBillDto> UpcomingBills);
+    List<UpcomingBillDto> UpcomingBills,
+    List<DashboardCategoryDto> CategoryBreakdown,
+    List<DashboardExpenseDto> RecentExpenses,
+    List<DashboardIouDebtDto> IouDebts);
 
 public record UpcomingBillDto(string BillName, decimal ShareAmount, int DueDay, bool IsPaid);
 public record NotificationDto(int Id, string Title, string Message, string Type, bool IsRead, DateTime CreatedAt);

@@ -77,7 +77,7 @@ public class AuthService
         if (!string.IsNullOrWhiteSpace(dto.RoomInviteCode))
         {
             var code = dto.RoomInviteCode.Trim();
-            var group = await _db.Groups.FirstOrDefaultAsync(g => g.InviteCode == code);
+            var group = await _db.Groups.FirstOrDefaultAsync(g => g.InviteCode != null && g.InviteCode.ToLower() == code.ToLower());
             if (group != null)
             {
                 _db.GroupMembers.Add(new GroupMember { GroupId = group.Id, UserId = user.Id });

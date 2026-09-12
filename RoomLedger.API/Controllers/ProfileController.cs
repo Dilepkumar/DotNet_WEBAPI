@@ -36,7 +36,6 @@ public class ProfileController : ControllerBase
         var u = await _db.Users.FindAsync(UserId);
         if (u == null) return NotFound();
 
-        // Active group membership: use query groupId if specified, or first active membership
         GroupMember? membership = null;
         if (groupId.HasValue)
         {
@@ -69,12 +68,11 @@ public class ProfileController : ControllerBase
             if (grp != null)
             {
                 roomName = grp.GroupName;
-                roomAddress = $"{grp.GroupName} Flat";
+                roomAddress = !string.IsNullOrWhiteSpace(grp.Address) ? grp.Address : $"{grp.GroupName} Flat";
                 inviteCode = grp.InviteCode;
             }
 
-            memberCount = await _db.GroupMembers
-                .CountAsync(m => m.GroupId == membership.GroupId && m.Status == MemberStatus.Active);
+            memberCount = await _db.GroupMembers.CountAsync(m => m.GroupId == membership.GroupId && m.Status == MemberStatus.Active);
 
             try
             {
@@ -87,15 +85,11 @@ public class ProfileController : ControllerBase
             }
         }
 
-        var userPrefix = !string.IsNullOrEmpty(u.Email) 
-            ? u.Email.Split('@')[0] 
-            : u.FullName.ToLower().Replace(" ", "");
+        var userPrefix = !string.IsNullOrEmpty(u.Email) ? u.Email.Split('@')[0] : u.FullName.ToLower().Replace(" ", "");
         var upiId = $"{userPrefix}@okhdfcbank";
 
         var nameParts = u.FullName.Trim().Split(' ');
-        var nickname = nameParts.Length > 1 
-            ? string.Concat(nameParts.Select(p => p[0])).ToUpper() 
-            : u.FullName;
+        var nickname = nameParts.Length > 1 ? string.Concat(nameParts.Select(p => p[0])).ToUpper() : u.FullName;
 
         return Ok(new
         {

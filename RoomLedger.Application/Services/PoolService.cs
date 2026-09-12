@@ -92,8 +92,7 @@ public class PoolService
             return (false, "Please provide an expense description");
 
         var items = dto.Items != null && dto.Items.Count > 0
-            ? dto.Items
-            : new List<PoolItemDto>();
+            ? dto.Items : new List<PoolItemDto>();
 
         var total = items.Sum(i => i.Amount);
         if (total <= 0)
@@ -152,6 +151,7 @@ public class PoolService
         {
             ExpenseCategoryId = i.CategoryId ?? categoryId,
             ItemName = string.IsNullOrWhiteSpace(i.ItemName) ? dto.Description.Trim() : i.ItemName.Trim(),
+            Quantity = i.Quantity ?? 1m,
             Amount = i.Amount
         }).ToList();
 
@@ -404,7 +404,7 @@ public class PoolService
                 e.ReceiptUrl,
                 e.Category,
                 e.IsReimbursed,
-                Items = e.Items.Select(i => new { i.Id, i.ItemName, i.Amount, i.ExpenseCategoryId }).ToList()
+                Items = e.Items.Select(i => new { i.Id, i.ItemName, i.Quantity, i.Amount, i.ExpenseCategoryId }).ToList()
             })
             .ToListAsync();
 

@@ -40,6 +40,15 @@ bld/
 # Uncomment if you have tasks that create the project's static files in wwwroot
 #wwwroot/
 
+# ── Uploaded user files (receipts, avatars) ──────────────────────────────────
+# These are runtime-generated files and must NOT be committed to Git.
+# Each folder has a .gitkeep file so the empty folder is preserved on clone.
+RoomLedger.API/wwwroot/receipts/*
+RoomLedger.API/wwwroot/avatars/*
+!RoomLedger.API/wwwroot/receipts/.gitkeep
+!RoomLedger.API/wwwroot/avatars/.gitkeep
+# ─────────────────────────────────────────────────────────────────────────────
+
 # Visual Studio 2017 auto generated files
 Generated\ Files/
 
