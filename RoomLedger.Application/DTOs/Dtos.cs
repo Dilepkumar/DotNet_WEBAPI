@@ -70,6 +70,15 @@ public record DashboardExpenseDto(
     string? ReceiptUrl,
     List<DashboardExpenseItemDto> Items);
 
+public record MonthlyTrendDto(string Month, decimal TotalAmount, double Percentage);
+
+public record DashboardItemBreakdownDto(
+    string ItemName,
+    string CategoryName,
+    decimal TotalAmount,
+    int Count,
+    double Percentage);
+
 public record DashboardIouDebtDto(
     int DebtorId,
     string DebtorName,
@@ -77,6 +86,32 @@ public record DashboardIouDebtDto(
     string CreditorName,
     decimal Amount,
     string? CreditorUpiId);
+
+public record DashboardCategorySliceDto(
+    string CategoryName,
+    string Icon,
+    decimal TotalAmount,
+    double Percentage);
+
+public record DashboardMonthlyCategoryDto(
+    string Month,
+    string MonthKey,
+    decimal TotalAmount,
+    List<DashboardCategorySliceDto> Categories);
+
+public record DashboardItemSliceDto(
+    string ItemName,
+    string CategoryName,
+    decimal TotalAmount,
+    decimal Quantity,
+    int Count,
+    double Percentage);
+
+public record DashboardMonthlyItemDto(
+    string Month,
+    string MonthKey,
+    decimal TotalAmount,
+    List<DashboardItemSliceDto> Items);
 
 public record DashboardDto(
     string GroupName,
@@ -93,8 +128,12 @@ public record DashboardDto(
     int UnreadNotifications,
     List<UpcomingBillDto> UpcomingBills,
     List<DashboardCategoryDto> CategoryBreakdown,
+    List<DashboardItemBreakdownDto> ItemBreakdown,
+    List<MonthlyTrendDto> MonthlyTrends,
     List<DashboardExpenseDto> RecentExpenses,
-    List<DashboardIouDebtDto> IouDebts);
+    List<DashboardIouDebtDto> IouDebts,
+    List<DashboardMonthlyCategoryDto>? MonthlyCategories = null,
+    List<DashboardMonthlyItemDto>? MonthlyItems = null);
 
 public record UpcomingBillDto(string BillName, decimal ShareAmount, int DueDay, bool IsPaid);
 public record NotificationDto(int Id, string Title, string Message, string Type, bool IsRead, DateTime CreatedAt);

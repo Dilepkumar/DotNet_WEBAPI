@@ -380,7 +380,7 @@ public class PoolService
                      ? c.Message
                      : ("Pool contribution" + (c.TransactionRef != null ? $" ({c.TransactionRef})" : "")),
                  userName = c.User.FullName,
-                 date = c.ContributedOn.ToString("yyyy-MM-dd"),
+                 date = c.CreatedAt.ToString("o"),
                  amount = c.Amount,
                  status = c.Status.ToString(),
                  approvedBy = c.ApprovedByUserId == null ? null
@@ -398,6 +398,7 @@ public class PoolService
                 e.Description,
                 e.TotalAmount,
                 e.ExpenseDate,
+                e.CreatedAt,
                 e.RecordedByUserId,
                 e.PaidByUserId,
                 e.PayerName,
@@ -434,7 +435,7 @@ public class PoolService
                 type = "Expense",
                 description = e.Description,
                 userName = userDisplay,
-                date = e.ExpenseDate.ToString("yyyy-MM-dd"),
+                date = e.CreatedAt.ToString("o"),
                 amount = e.TotalAmount,
                 status = e.PaidByUserId.HasValue ? "Reimbursed ✓" : "Approved",
                 approvedBy = (string?)null,
@@ -594,6 +595,30 @@ public class PoolService
                 c.TransactionRef
             }).ToListAsync() : null;
 
+        var allExpensesWithDates = await _db.PoolExpenses
+            .Where(e => e.GroupId == groupId && !e.IsVoided)
+            .Select(e => new { e.ExpenseDate, e.TotalAmount })
+            .ToListAsync();
+
+        var monthlyGroups = allExpensesWithDates
+            .GroupBy(e => e.ExpenseDate.ToString("yyyy-MM"))
+            .Select(g => new
+            {
+                month = g.Key,
+                total = g.Sum(x => x.TotalAmount)
+            })
+            .OrderBy(x => x.month)
+            .TakeLast(6)
+            .ToList();
+
+        var maxMonth = monthlyGroups.Any() ? monthlyGroups.Max(m => m.total) : 0m;
+        var monthlyBreakdown = monthlyGroups.Select(m => new
+        {
+            m.month,
+            m.total,
+            percentage = maxMonth > 0 ? Math.Round((double)(m.total / maxMonth) * 100, 1) : 0
+        }).ToList();
+
         return new
         {
             isAdmin,
@@ -605,6 +630,7 @@ public class PoolService
             memberStatuses,
             categoryBreakdown,
             itemBreakdown,
+            monthlyBreakdown,
             outOfPocketSummary,
             recentTransactions
         };
