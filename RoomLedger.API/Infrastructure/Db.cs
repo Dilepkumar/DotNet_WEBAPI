@@ -38,7 +38,7 @@ public class Db : IDb
 
     public async Task<T> QueryScalarAsync<T>(string sql, object? param = null)
     {
-        using var c = Open(); 
+        using var c = Open();
         return await c.ExecuteScalarAsync<T>(sql, param)!;
     }
 }

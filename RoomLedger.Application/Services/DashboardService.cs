@@ -52,15 +52,25 @@ public class DashboardService
         // 3. Category Expense Breakdown
         var items = await _db.ExpenseItems
             .Include(i => i.ExpenseCategory)
+            .Include(i => i.PoolExpense)
             .Where(i => i.PoolExpense != null && i.PoolExpense.GroupId == groupId && !i.PoolExpense.IsVoided)
             .ToListAsync();
 
         var categoryGroups = items
-            .GroupBy(i => new
+            .GroupBy(i =>
             {
-                CatId = i.ExpenseCategoryId,
-                CatName = !string.IsNullOrWhiteSpace(i.ExpenseCategory?.Name) ? i.ExpenseCategory.Name : "General",
-                Icon = !string.IsNullOrWhiteSpace(i.ExpenseCategory?.Icon) ? i.ExpenseCategory.Icon : "📦"
+                var catName = !string.IsNullOrWhiteSpace(i.ExpenseCategory?.Name)
+                    ? i.ExpenseCategory.Name
+                    : (!string.IsNullOrWhiteSpace(i.PoolExpense?.Category) ? i.PoolExpense.Category : "Other");
+                var icon = !string.IsNullOrWhiteSpace(i.ExpenseCategory?.Icon)
+                    ? i.ExpenseCategory.Icon
+                    : PoolService.GetCategoryIcon(catName);
+                return new
+                {
+                    CatId = i.ExpenseCategoryId,
+                    CatName = catName,
+                    Icon = icon
+                };
             })
             .Select(g => new
             {
@@ -86,7 +96,9 @@ public class DashboardService
             .GroupBy(i => new
             {
                 ItemName = i.ItemName.Trim(),
-                CatName = !string.IsNullOrWhiteSpace(i.ExpenseCategory?.Name) ? i.ExpenseCategory.Name : "General"
+                CatName = !string.IsNullOrWhiteSpace(i.ExpenseCategory?.Name)
+                    ? i.ExpenseCategory.Name
+                    : (!string.IsNullOrWhiteSpace(i.PoolExpense?.Category) ? i.PoolExpense.Category : "Other")
             })
             .Select(g => new
             {
@@ -229,7 +241,7 @@ public class DashboardService
             maxMonthTotal > 0 ? Math.Round((double)(m.TotalAmount / maxMonthTotal) * 100, 1) : 0
         )).ToList();
 
-        // 4. Recent Pool Expenses with full timestamp and item details
+        // 4. Recent Pool Expenses with full timestamp, item details, and recorder name
         var recentExpensesEntities = await _db.PoolExpenses
             .Include(e => e.Items)
             .Where(e => e.GroupId == groupId && !e.IsVoided)
@@ -237,16 +249,40 @@ public class DashboardService
             .Take(5)
             .ToListAsync();
 
-        var recentExpenses = recentExpensesEntities.Select(e => new DashboardExpenseDto(
-            e.Id,
-            e.Description,
-            e.TotalAmount,
-            e.CreatedAt.ToString("o"),
-            e.PayerName ?? "Pool Fund",
-            e.PaidByUserId != null ? "me" : "pool",
-            e.ReceiptUrl,
-            e.Items.Select(i => new DashboardExpenseItemDto(i.ItemName, i.Amount, i.Quantity)).ToList()
-        )).ToList();
+        var involvedUserIds = recentExpensesEntities
+            .Select(e => e.RecordedByUserId)
+            .Concat(recentExpensesEntities.Where(e => e.PaidByUserId.HasValue).Select(e => e.PaidByUserId!.Value))
+            .Distinct()
+            .ToList();
+
+        var userNameMap = await _db.Users
+            .Where(u => involvedUserIds.Contains(u.Id))
+            .ToDictionaryAsync(u => u.Id, u => u.FullName);
+
+        var recentExpenses = recentExpensesEntities.Select(e =>
+        {
+            var recorder = userNameMap.GetValueOrDefault(e.RecordedByUserId, "Roommate");
+            var payer = e.PaidByUserId.HasValue
+                ? userNameMap.GetValueOrDefault(e.PaidByUserId.Value, e.PayerName ?? "Roommate")
+                : "Central Pool";
+
+            var userDisplay = e.PaidByUserId.HasValue
+                ? $"{payer} (Paid own money · {(e.IsReimbursed ? "Reimbursed from Pool ✓" : "Pending Reimbursement")})"
+                : $"Central Pool (Added by {recorder})";
+
+            return new DashboardExpenseDto(
+                e.Id,
+                e.Description,
+                e.TotalAmount,
+                e.CreatedAt.ToString("o"),
+                userDisplay,
+                e.PaidByUserId != null ? "me" : "pool",
+                e.ReceiptUrl,
+                e.Items.Select(i => new DashboardExpenseItemDto(i.ItemName, i.Amount, i.Quantity)).ToList(),
+                recorder,
+                e.IsReimbursed
+            );
+        }).ToList();
 
         // 5. Fixed Recurring Bills
         var allSplits = await _db.BillSplits

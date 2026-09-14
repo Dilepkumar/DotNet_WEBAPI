@@ -68,7 +68,9 @@ public record DashboardExpenseDto(
     string? PaidByName,
     string? PayerType,
     string? ReceiptUrl,
-    List<DashboardExpenseItemDto> Items);
+    List<DashboardExpenseItemDto> Items,
+    string? RecordedByName = null,
+    bool IsReimbursed = true);
 
 public record MonthlyTrendDto(string Month, decimal TotalAmount, double Percentage);
 
@@ -142,6 +144,7 @@ public record RejectContributionDto(string Reason);
 public record SetSharesDto(List<MemberShareDto> Shares);
 public record MemberShareDto(int? UserId, string? AliasName, decimal MonthlyShare);
 public record SetTargetDto(decimal MonthlyPoolTarget);
+public record ReimburseOutOfPocketDto(int? TargetUserId = null, int? ExpenseId = null);
 public record ForgotPasswordDto([Required, EmailAddress] string Email);
 public record ResetPasswordDto(
     [Required, EmailAddress] string Email,

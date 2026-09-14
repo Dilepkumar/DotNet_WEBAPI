@@ -113,4 +113,12 @@ public class PoolController : ControllerBase
     [HttpGet("history")]
     public async Task<IActionResult> History(int groupId, [FromQuery] string? period, [FromQuery] string? fromDate, [FromQuery] string? toDate)
         => Ok(await _pool.GetHistoryAsync(groupId, period, fromDate, toDate));
+
+    [HttpPost("reimburse-out-of-pocket")]
+    public async Task<IActionResult> ReimburseOutOfPocket(int groupId, [FromBody] ReimburseOutOfPocketDto dto)
+    {
+        var (ok, msg, amount) = await _pool.ReimburseOutOfPocketAsync(groupId, Me, dto);
+        return ok ? Ok(new { message = msg, reimbursedAmount = amount }) : BadRequest(new { message = msg });
+    }
 }
+

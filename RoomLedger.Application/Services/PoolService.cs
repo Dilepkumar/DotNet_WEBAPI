@@ -119,33 +119,31 @@ public class PoolService
                 ? d : DateOnly.FromDateTime(DateTime.UtcNow),
             ReceiptUrl = dto.ReceiptUrl,
             Category = dto.Category,
-            IsReimbursed = true
+            IsReimbursed = !paidByUserId.HasValue
         };
 
-        int? categoryId = null;
-        if (!string.IsNullOrWhiteSpace(dto.Category))
+        var rawCategory = !string.IsNullOrWhiteSpace(dto.Category) ? dto.Category.Trim() : "Groceries";
+        var cleanCat = System.Text.RegularExpressions.Regex.Replace(rawCategory, @"^[\p{Cs}\p{So}\p{Sk}\p{Cn}\s]+", "").Trim();
+        if (string.IsNullOrWhiteSpace(cleanCat)) cleanCat = rawCategory;
+
+        var matchedCat = await _db.ExpenseCategories
+            .FirstOrDefaultAsync(c => c.Name.ToLower() == cleanCat.ToLower() ||
+                                      c.Name.ToLower() == rawCategory.ToLower() ||
+                                      cleanCat.ToLower().Contains(c.Name.ToLower()) ||
+                                      c.Name.ToLower().Contains(cleanCat.ToLower()));
+        if (matchedCat == null)
         {
-            var catName = dto.Category.Trim();
-            var matchedCat = await _db.ExpenseCategories
-                .FirstOrDefaultAsync(c => c.Name.ToLower() == catName.ToLower() ||
-                                          catName.ToLower().Contains(c.Name.ToLower()) ||
-                                          c.Name.ToLower().Contains(catName.ToLower()));
-            if (matchedCat != null)
+            matchedCat = new ExpenseCategory
             {
-                categoryId = matchedCat.Id;
-            }
-            else
-            {
-                matchedCat = new ExpenseCategory
-                {
-                    Name = catName,
-                    Icon = "🛒"
-                };
-                _db.ExpenseCategories.Add(matchedCat);
-                await _db.SaveChangesAsync();
-                categoryId = matchedCat.Id;
-            }
+                Name = cleanCat,
+                Icon = GetCategoryIcon(cleanCat)
+            };
+            _db.ExpenseCategories.Add(matchedCat);
+            await _db.SaveChangesAsync();
         }
+
+        expense.Category = matchedCat.Name;
+        var categoryId = matchedCat.Id;
 
         expense.Items = items.Select(i => new ExpenseItem
         {
@@ -154,6 +152,7 @@ public class PoolService
             Quantity = i.Quantity ?? 1m,
             Amount = i.Amount
         }).ToList();
+
 
         _db.PoolExpenses.Add(expense);
         await _db.SaveChangesAsync();
@@ -263,15 +262,33 @@ public class PoolService
             .ToListAsync();
     }
 
+    public static string GetCategoryIcon(string? category)
+    {
+        if (string.IsNullOrWhiteSpace(category)) return "📦";
+        var lower = category.ToLower();
+        if (lower.Contains("groc")) return "🥕";
+        if (lower.Contains("dair") || lower.Contains("milk")) return "🥛";
+        if (lower.Contains("util") || lower.Contains("bill") || lower.Contains("power")) return "⚡";
+        if (lower.Contains("clean") || lower.Contains("house")) return "🧴";
+        if (lower.Contains("food") || lower.Contains("snack")) return "🍕";
+        if (lower.Contains("rent")) return "🏠";
+        if (lower.Contains("maint") || lower.Contains("repair")) return "🔧";
+        if (lower.Contains("travel") || lower.Contains("cab") || lower.Contains("trans")) return "🚕";
+        return "📦";
+    }
+
     public async Task<(bool ok, string message)> SeedCategoriesAsync()
     {
         if (await _db.ExpenseCategories.AnyAsync()) return (true, "Already seeded");
         _db.ExpenseCategories.AddRange(
-            new ExpenseCategory { Name = "Groceries", Icon = "🛒" },
-            new ExpenseCategory { Name = "Dairy", Icon = "🥛" },
-            new ExpenseCategory { Name = "Gas", Icon = "🔥" },
-            new ExpenseCategory { Name = "Cleaning Supplies", Icon = "🧹" },
-            new ExpenseCategory { Name = "Maintenance", Icon = "🔧" },
+            new ExpenseCategory { Name = "Groceries", Icon = "🥕" },
+            new ExpenseCategory { Name = "Dairy & Essentials", Icon = "🥛" },
+            new ExpenseCategory { Name = "Utilities & Bills", Icon = "⚡" },
+            new ExpenseCategory { Name = "Cleaning & Household", Icon = "🧴" },
+            new ExpenseCategory { Name = "Food & Snacks", Icon = "🍕" },
+            new ExpenseCategory { Name = "Maintenance & Repairs", Icon = "🔧" },
+            new ExpenseCategory { Name = "Travel & Transport", Icon = "🚕" },
+            new ExpenseCategory { Name = "Rent", Icon = "🏠" },
             new ExpenseCategory { Name = "Other", Icon = "📦" });
         await _db.SaveChangesAsync();
         return (true, "Categories seeded");
@@ -301,11 +318,11 @@ public class PoolService
         return (true, "Pool expense voided — balance restored");
     }
     private async Task<bool> IsAdminAsync(int groupId, int userId) =>
-    await _db.GroupMembers.AnyAsync(m =>
-        m.GroupId == groupId && m.UserId == userId &&
-        m.Role == MemberRole.Admin && m.Status == MemberStatus.Active);
+        await _db.GroupMembers.AnyAsync(m =>
+            m.GroupId == groupId && m.UserId == userId && m.Role == MemberRole.Admin && m.Status == MemberStatus.Active);
 
-    // PoolService — add this method:
+
+    // PoolService — GetPoolBalanceAsync:
     public async Task<object> GetPoolBalanceAsync(int groupId, int userId)
     {
         var target = await _db.Groups
@@ -317,8 +334,13 @@ public class PoolService
             .Where(c => c.GroupId == groupId && c.Status == ContributionStatus.Approved)
             .SumAsync(c => (decimal?)c.Amount) ?? 0m;
 
+        // Money actually withdrawn from pool: direct pool payments + reimbursed out-of-pocket expenses
         var spent = await _db.PoolExpenses
-            .Where(e => e.GroupId == groupId && !e.IsVoided)
+            .Where(e => e.GroupId == groupId && !e.IsVoided && (!e.PaidByUserId.HasValue || e.IsReimbursed))
+            .SumAsync(e => (decimal?)e.TotalAmount) ?? 0m;
+
+        var pendingReimbursementsTotal = await _db.PoolExpenses
+            .Where(e => e.GroupId == groupId && !e.IsVoided && e.PaidByUserId.HasValue && !e.IsReimbursed)
             .SumAsync(e => (decimal?)e.TotalAmount) ?? 0m;
 
         var currentMonth = DateTime.UtcNow.ToString("yyyy-MM");
@@ -426,7 +448,7 @@ public class PoolService
                 : "Central Pool";
 
             var userDisplay = e.PaidByUserId.HasValue
-                ? $"{payer} (Paid own money · Reimbursed from Pool)"
+                ? $"{payer} (Paid own money · {(e.IsReimbursed ? "Reimbursed from Pool ✓" : "Pending Reimbursement")})"
                 : $"Central Pool (Added by {recorder})";
 
             return new
@@ -437,7 +459,7 @@ public class PoolService
                 userName = userDisplay,
                 date = e.CreatedAt.ToString("o"),
                 amount = e.TotalAmount,
-                status = e.PaidByUserId.HasValue ? "Reimbursed ✓" : "Approved",
+                status = e.PaidByUserId.HasValue ? (e.IsReimbursed ? "Reimbursed ✓" : "Pending Reimbursement") : "Approved",
                 approvedBy = (string?)null,
                 rejectReason = (string?)null,
                 payerType = e.PaidByUserId.HasValue ? "member" : "pool",
@@ -568,16 +590,25 @@ public class PoolService
                 var pUserId = g.Key;
                 var pName = userNameMap.GetValueOrDefault(pUserId, g.First().PayerName ?? "Roommate");
                 var totalPaid = g.Sum(x => x.TotalAmount);
+                var pendingReimbursement = g.Where(x => !x.IsReimbursed).Sum(x => x.TotalAmount);
+                var reimbursedAmount = g.Where(x => x.IsReimbursed).Sum(x => x.TotalAmount);
+                var pendingCount = g.Count(x => !x.IsReimbursed);
+                var isFullyReimbursed = pendingReimbursement == 0;
                 return new
                 {
                     userId = pUserId,
                     userName = pName,
                     totalPaid,
+                    pendingReimbursement,
+                    reimbursedAmount,
+                    isFullyReimbursed,
+                    pendingCount,
                     expenseCount = g.Count(),
-                    status = "Reimbursed from Pool ✓"
+                    status = isFullyReimbursed ? "Reimbursed from Pool ✓" : $"Pending Reimbursement (₹{pendingReimbursement:N0})"
                 };
             })
-            .OrderByDescending(x => x.totalPaid)
+            .OrderByDescending(x => x.pendingReimbursement)
+            .ThenByDescending(x => x.totalPaid)
             .ToList();
 
         var isAdmin = await _db.GroupMembers.AnyAsync(m => m.GroupId == groupId
@@ -627,6 +658,7 @@ public class PoolService
             monthlyTarget = target,
             totalContributions = contributed,
             totalSpent = spent,
+            pendingReimbursementsTotal,
             memberStatuses,
             categoryBreakdown,
             itemBreakdown,
@@ -849,7 +881,7 @@ public class PoolService
                 : "Central Pool";
 
             var userDisplay = e.PaidByUserId.HasValue
-                ? $"{payer} (Paid own money · Reimbursed from Pool)"
+                ? $"{payer} (Paid own money · {(e.IsReimbursed ? "Reimbursed from Pool ✓" : "Pending Reimbursement")})"
                 : $"Central Pool (Added by {recorder})";
 
             return new
@@ -860,7 +892,7 @@ public class PoolService
                 userName = userDisplay,
                 date = e.ExpenseDate.ToString("yyyy-MM-dd"),
                 amount = e.TotalAmount,
-                status = e.PaidByUserId.HasValue ? "Reimbursed ✓" : "Approved",
+                status = e.PaidByUserId.HasValue ? (e.IsReimbursed ? "Reimbursed ✓" : "Pending Reimbursement") : "Approved",
                 payerType = e.PaidByUserId.HasValue ? "member" : "pool",
                 payerName = payer,
                 recorderName = recorder,
@@ -909,4 +941,68 @@ public class PoolService
         };
     }
 
+    public async Task<(bool ok, string message, decimal reimbursedAmount)> ReimburseOutOfPocketAsync(int groupId, int currentUserId, ReimburseOutOfPocketDto dto)
+    {
+        var member = await _db.GroupMembers.FirstOrDefaultAsync(m => m.GroupId == groupId && m.UserId == currentUserId && m.Status == MemberStatus.Active);
+        if (member == null) return (false, "You are not an active member of this group.", 0m);
+
+        var isAdmin = member.Role == MemberRole.Admin;
+
+        if (!isAdmin && dto.TargetUserId.HasValue && dto.TargetUserId.Value != currentUserId)
+        {
+            return (false, "Only group Admins can reimburse expenses for other roommates.", 0m);
+        }
+
+        var query = _db.PoolExpenses.Where(e => e.GroupId == groupId && !e.IsVoided && e.PaidByUserId.HasValue && !e.IsReimbursed);
+
+        if (dto.ExpenseId.HasValue)
+        {
+            query = query.Where(e => e.Id == dto.ExpenseId.Value);
+        }
+        else if (dto.TargetUserId.HasValue)
+        {
+            query = query.Where(e => e.PaidByUserId == dto.TargetUserId.Value);
+        }
+        else if (!isAdmin)
+        {
+            query = query.Where(e => e.PaidByUserId == currentUserId);
+        }
+
+        var expensesToReimburse = await query.ToListAsync();
+        if (!expensesToReimburse.Any())
+        {
+            return (false, "No pending out-of-pocket expenses found to reimburse.", 0m);
+        }
+
+        var totalReimbursement = expensesToReimburse.Sum(e => e.TotalAmount);
+
+        var totalContributed = await _db.PoolContributions
+            .Where(c => c.GroupId == groupId && c.Status == ContributionStatus.Approved)
+            .SumAsync(c => (decimal?)c.Amount) ?? 0m;
+
+        var totalAlreadySpent = await _db.PoolExpenses
+            .Where(e => e.GroupId == groupId && !e.IsVoided && (!e.PaidByUserId.HasValue || e.IsReimbursed))
+            .SumAsync(e => (decimal?)e.TotalAmount) ?? 0m;
+
+        var availableBalance = totalContributed - totalAlreadySpent;
+
+        if (availableBalance < totalReimbursement)
+        {
+            return (false, $"Insufficient central room pool balance (₹{availableBalance:N0} available) to reimburse ₹{totalReimbursement:N0}. Roommates need to deposit contributions first.", 0m);
+        }
+
+        foreach (var exp in expensesToReimburse)
+        {
+            exp.IsReimbursed = true;
+        }
+
+        await _db.SaveChangesAsync();
+
+        foreach (var exp in expensesToReimburse)
+        {
+            await _audit.LogAsync("PoolExpense", exp.Id, "ReimburseOutOfPocket", null, new { exp.TotalAmount, exp.PaidByUserId, ReimbursedByUserId = currentUserId }, currentUserId, "Reimbursed from Central Room Pool");
+        }
+
+        return (true, $"Successfully reimbursed ₹{totalReimbursement:N0} from central pool for {expensesToReimburse.Count} expense(s).", totalReimbursement);
+    }
 }

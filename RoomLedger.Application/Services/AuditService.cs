@@ -9,8 +9,7 @@ public class AuditService : IAuditService
     private readonly IApplicationDbContext _db;
     public AuditService(IApplicationDbContext db) => _db = db;
 
-    public async Task LogAsync(string entityName, int entityId, string action,
-                               object? oldValue, object? newValue, int modifiedBy, string? reason)
+    public async Task LogAsync(string entityName, int entityId, string action, object? oldValue, object? newValue, int modifiedBy, string? reason)
     {
         _db.AuditLogs.Add(new AuditLog
         {
