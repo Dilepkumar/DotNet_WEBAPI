@@ -35,14 +35,23 @@ builder.Services.AddSwaggerGen(c =>
     });
 });
 
-// ───────────── CORS (Angular host) ─────────────
+// ───────────── CORS (Angular host & Vercel) ─────────────
 builder.Services.AddCors(o => o.AddPolicy("app", p => p
-    .WithOrigins(
-        "http://localhost:4200",                     // local dev
-        "https://room-ledger.vercel.app"             // your deployed Angular URL — change me
-    )
+    .SetIsOriginAllowed(origin =>
+    {
+        if (string.IsNullOrWhiteSpace(origin)) return false;
+        try
+        {
+            var host = new Uri(origin).Host;
+            return host == "localhost"
+                || host.EndsWith("vercel.app", StringComparison.OrdinalIgnoreCase)
+                || host.EndsWith("runasp.net", StringComparison.OrdinalIgnoreCase);
+        }
+        catch { return false; }
+    })
     .AllowAnyHeader()
-    .AllowAnyMethod()));
+    .AllowAnyMethod()
+    .AllowCredentials()));
 
 // ───────────── Layers ─────────────
 builder.Services.AddInfrastructure(builder.Configuration);   // DbContext + services + JWT
