@@ -44,8 +44,28 @@ public class IouController : ControllerBase
     public async Task<IActionResult> Settle(int groupId, FlexibleSettleDto dto)
     {
         var payee = dto.PayeeId ?? dto.ToUserId ?? 0;
+        var specifiedPayer = dto.PayerId ?? dto.FromUserId;
+
+        // If caller is recording settlement received from a debtor
+        var payer = (specifiedPayer.HasValue && specifiedPayer.Value > 0 && payee == Me)
+            ? specifiedPayer.Value
+            : Me;
+
+        if (payee == 0 && specifiedPayer.HasValue && specifiedPayer.Value != Me)
+        {
+            payee = Me;
+            payer = specifiedPayer.Value;
+        }
+
         var settleDto = new SettleUpDto(payee, dto.Amount, dto.TransactionRef ?? dto.Note);
-        var (ok, msg) = await _iou.SettleUpAsync(groupId, Me, settleDto);
+        var (ok, msg) = await _iou.SettleUpAsync(groupId, payer, settleDto);
+        return ok ? Ok(new { message = msg }) : BadRequest(new { message = msg });
+    }
+
+    [HttpPost("debts/{debtorId:int}/remind")]
+    public async Task<IActionResult> Remind(int groupId, int debtorId)
+    {
+        var (ok, msg) = await _iou.RemindDebtorAsync(groupId, Me, debtorId);
         return ok ? Ok(new { message = msg }) : BadRequest(new { message = msg });
     }
 

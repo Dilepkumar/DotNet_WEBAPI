@@ -87,6 +87,21 @@ public class AuthService
 
         var devOtp = await CreateOtpAsync(user.Email, OtpPurpose.Registration);
 
+        // Send Welcome email to newly registered customer
+        try
+        {
+            var welcomePlaceholders = new Dictionary<string, string>
+            {
+                { "{{USER_NAME}}", user.FullName },
+                { "{{EMAIL}}", user.Email },
+                { "{{PHONE}}", user.Phone ?? "" },
+                { "{{APP_NAME}}", "RoomLedger" },
+                { "{{LOGIN_URL}}", "https://roomledger-app.vercel.app/auth/login" }
+            };
+            await _templateService.SendTemplatedEmailAsync(user.Email, "WELCOME_EMAIL", welcomePlaceholders);
+        }
+        catch { /* Non-blocking welcome email */ }
+
         var (refreshRaw, _) = await IssueRefreshTokenAsync(user.Id);
         return (true, "Registration successful", new
         {

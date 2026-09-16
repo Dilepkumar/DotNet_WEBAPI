@@ -34,7 +34,7 @@ public record PoolExpenseDto(
     string? PayerType = null,
     List<string>? SharedMemberIds = null);
 public record SettleUpDto(int PayeeId, decimal Amount, string? TransactionRef);
-public record FlexibleSettleDto(int? PayeeId, int? ToUserId, decimal Amount, string? TransactionRef, string? Note);
+public record FlexibleSettleDto(int? PayeeId, int? ToUserId, decimal Amount, string? TransactionRef, string? Note, int? PayerId = null, int? FromUserId = null);
 public record TransferDto(int FromUserId, int ToUserId, decimal Amount);
 public record DebtPairDto(int DebtorId, int CreditorId, decimal Amount);
 public record GenerateSplitsDto(string BillingMonth);

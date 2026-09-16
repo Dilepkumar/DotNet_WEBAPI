@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using RoomLedger.Application.Common.Interfaces;
 using RoomLedger.Application.DTOs;
 using RoomLedger.Application.Services;
 
@@ -35,22 +36,31 @@ public class PoolController : ControllerBase
     }
 
     [HttpPost("receipt")]
-    public async Task<IActionResult> UploadReceipt(int groupId, IFormFile file, [FromServices] IWebHostEnvironment env)
+    public async Task<IActionResult> UploadReceipt(int groupId, IFormFile file, [FromQuery] int? expenseId, [FromServices] ICloudStorageService cloud, [FromServices] IApplicationDbContext db)
     {
-        if (file == null || file.Length == 0) return BadRequest(new { message = "No file uploaded" });
-        if (file.Length > 5 * 1024 * 1024) return BadRequest(new { message = "Max 5 MB" });
-        var allowed = new[] { "image/jpeg", "image/png", "image/webp", "image/jpg" };
-        if (!allowed.Contains(file.ContentType.ToLower())) return BadRequest(new { message = "Only JPG/PNG/WebP images allowed" });
+        if (file == null || file.Length == 0)
+            return BadRequest(new { message = "No file provided" });
+        if (file.Length > 10 * 1024 * 1024)
+            return BadRequest(new { message = "Max file size is 10 MB" });
 
-        var ext = Path.GetExtension(file.FileName).ToLowerInvariant();
-        var fileName = $"receipt_{groupId}_{DateTime.UtcNow.Ticks}{ext}";
-        var folder = Path.Combine(env.WebRootPath ?? "wwwroot", "receipts");
-        Directory.CreateDirectory(folder);
+        var allowed = new[] { "image/jpeg", "image/png", "image/webp", "image/gif", "application/pdf" };
+        if (!allowed.Contains(file.ContentType))
+            return BadRequest(new { message = "Only JPG, PNG, WebP, GIF or PDF allowed" });
 
-        await using var stream = System.IO.File.Create(Path.Combine(folder, fileName));
-        await file.CopyToAsync(stream);
+        // Upload to Cloudinary → roomledger/receipts folder
+        var url = await cloud.UploadAsync(file, "roomledger/receipts");
 
-        return Ok(new { receiptUrl = $"/receipts/{fileName}" });
+        // If expenseId is provided, save URL to the expense record
+        if (expenseId.HasValue)
+        {
+            var expense = await db.PoolExpenses.FindAsync(expenseId.Value);
+            if (expense != null)
+            {
+                expense.ReceiptUrl = url;
+                await db.SaveChangesAsync();
+            }
+        }
+        return Ok(new { receiptUrl = url });
     }
 
     [HttpGet("overview")]

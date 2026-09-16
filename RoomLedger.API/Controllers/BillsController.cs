@@ -64,6 +64,13 @@ public class BillsController : ControllerBase
         return ok ? Ok(new { message = msg }) : BadRequest(new { message = msg });
     }
 
+    [HttpPost("{billId:int}/remind")]
+    public async Task<IActionResult> Remind(int groupId, int billId)
+    {
+        var (ok, msg, count) = await _bills.RemindPendingAsync(groupId, Me, billId);
+        return ok ? Ok(new { message = msg, count }) : BadRequest(new { message = msg });
+    }
+
     [HttpDelete("{billId:int}")]
     public async Task<IActionResult> Deactivate(int groupId, int billId)
     {

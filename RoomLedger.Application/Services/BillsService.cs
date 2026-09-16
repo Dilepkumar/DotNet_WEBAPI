@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
 using RoomLedger.Application.Common.Interfaces;
 using RoomLedger.Application.DTOs;
 using RoomLedger.Domain.Common;
@@ -9,7 +9,12 @@ namespace RoomLedger.Application.Services;
 public class BillsService
 {
     private readonly IApplicationDbContext _db;
-    public BillsService(IApplicationDbContext db) => _db = db;
+    private readonly NotificationService _notifications;
+    public BillsService(IApplicationDbContext db, NotificationService notifications)
+    {
+        _db = db;
+        _notifications = notifications;
+    }
 
     // ───────────────────── CREATE BILL CONTAINER ─────────────────────
     public async Task<(bool ok, string message, object? result)> CreateAsync(int groupId, int userId, BillDto dto)
@@ -31,7 +36,31 @@ public class BillsService
         };
         _db.RecurringBills.Add(bill);
         await _db.SaveChangesAsync();
-        return (true, "Bill created", new { billId = bill.Id });
+
+        // Immediately generate splits for the active members for this billing month
+        var memberIds = await _db.GroupMembers
+            .Where(m => m.GroupId == groupId && m.Status == MemberStatus.Active)
+            .Select(m => m.UserId).ToListAsync();
+
+        if (memberIds.Count > 0)
+        {
+            var billingMonthStr = dto.BillingMonth.ToString("yyyy-MM");
+            var perHead = Math.Round(bill.Amount / memberIds.Count, 2, MidpointRounding.AwayFromZero);
+            foreach (var uid in memberIds)
+            {
+                _db.BillSplits.Add(new BillSplit
+                {
+                    RecurringBillId = bill.Id,
+                    GroupId = groupId,
+                    BillingMonth = billingMonthStr,
+                    UserId = uid,
+                    ShareAmount = perHead
+                });
+            }
+            await _db.SaveChangesAsync();
+        }
+
+        return (true, "Bill created and split across flatmates", new { billId = bill.Id });
     }
 
     // ───────────── GENERATE SPLITS for a month (per-member checklist rows) ─────────────
@@ -75,6 +104,48 @@ public class BillsService
     // ───────────── MONTH VIEW: checklist of who paid which bill ─────────────
     public async Task<object> GetMonthAsync(int groupId, string billingMonth)
     {
+        // Auto-generate splits if active recurring bills exist for the group but don't have splits for this month
+        var activeBills = await _db.RecurringBills
+            .Where(b => b.GroupId == groupId && b.IsActive)
+            .ToListAsync();
+
+        if (activeBills.Count > 0)
+        {
+            var existingBillIds = await _db.BillSplits
+                .Where(s => s.GroupId == groupId && s.BillingMonth == billingMonth)
+                .Select(s => s.RecurringBillId)
+                .Distinct()
+                .ToListAsync();
+
+            var ungeneratedBills = activeBills.Where(b => !existingBillIds.Contains(b.Id)).ToList();
+            if (ungeneratedBills.Count > 0)
+            {
+                var memberIds = await _db.GroupMembers
+                    .Where(m => m.GroupId == groupId && m.Status == MemberStatus.Active)
+                    .Select(m => m.UserId).ToListAsync();
+
+                if (memberIds.Count > 0)
+                {
+                    foreach (var bill in ungeneratedBills)
+                    {
+                        var perHead = Math.Round(bill.Amount / memberIds.Count, 2, MidpointRounding.AwayFromZero);
+                        foreach (var uid in memberIds)
+                        {
+                            _db.BillSplits.Add(new BillSplit
+                            {
+                                RecurringBillId = bill.Id,
+                                GroupId = groupId,
+                                BillingMonth = billingMonth,
+                                UserId = uid,
+                                ShareAmount = perHead
+                            });
+                        }
+                    }
+                    await _db.SaveChangesAsync();
+                }
+            }
+        }
+
         var rows = await _db.BillSplits
             .Where(s => s.GroupId == groupId && s.BillingMonth == billingMonth)
             .Select(s => new
@@ -99,6 +170,7 @@ public class BillsService
                         .Select(g => new
                         {
                             billId = g.Key.RecurringBillId,
+                            id = g.Key.RecurringBillId,
                             billName = g.Key.BillName,
                             totalAmount = g.Key.TotalAmount,
                             dueDay = g.Key.DueDay,
@@ -106,7 +178,15 @@ public class BillsService
                             totalPaid = g.Count(x => x.IsPaid),
                             memberCount = g.Count(),
                             members = g.Select(x => new
-                            { x.UserId, userName = x.UserName, x.ShareAmount, x.IsPaid, x.PaidAt })
+                            {
+                                id = x.Id,
+                                splitId = x.Id,
+                                userId = x.UserId,
+                                userName = x.UserName,
+                                shareAmount = x.ShareAmount,
+                                isPaid = x.IsPaid,
+                                paidAt = x.PaidAt
+                            })
                         })
         };
     }
@@ -114,14 +194,48 @@ public class BillsService
     // ───────────── MARK MY SHARE PAID / UNPAID ─────────────
     public async Task<(bool ok, string message)> TogglePaidAsync(int groupId, int userId, int splitId)
     {
+        var isAdmin = await IsAdminAsync(groupId, userId);
         var split = await _db.BillSplits.FirstOrDefaultAsync(s =>
-            s.Id == splitId && s.GroupId == groupId && s.UserId == userId);
-        if (split == null) return (false, "Split not found for this user");
+            s.Id == splitId && s.GroupId == groupId && (s.UserId == userId || isAdmin));
+        if (split == null) return (false, "Split not found or you do not have permission to update it");
 
         split.IsPaid = !split.IsPaid;
         split.PaidAt = split.IsPaid ? DateTime.UtcNow : null;
         await _db.SaveChangesAsync();
         return (true, split.IsPaid ? "Marked as paid" : "Marked as unpaid");
+    }
+
+    // ───────────── SEND BILL REMINDER TO UNPAID MEMBERS ─────────────
+    public async Task<(bool ok, string message, int count)> RemindPendingAsync(int groupId, int userId, int billId)
+    {
+        var bill = await _db.RecurringBills.FirstOrDefaultAsync(b => b.Id == billId && b.GroupId == groupId);
+        if (bill == null) return (false, "Bill not found", 0);
+
+        var currentMonth = DateTime.UtcNow.ToString("yyyy-MM");
+        var unpaidSplits = await _db.BillSplits
+            .Where(s => s.GroupId == groupId && s.RecurringBillId == billId && s.BillingMonth == currentMonth && !s.IsPaid)
+            .ToListAsync();
+
+        if (unpaidSplits.Count == 0)
+            return (false, "All flatmates have already paid this bill!", 0);
+
+        int sent = 0;
+        foreach (var s in unpaidSplits)
+        {
+            if (s.UserId != userId)
+            {
+                await _notifications.PushAsync(
+                    s.UserId,
+                    groupId,
+                    $"Bill Reminder: {bill.BillName}",
+                    $"Friendly reminder to pay your share of ₹{s.ShareAmount:0.##} for {bill.BillName}.",
+                    "BillReminder"
+                );
+                sent++;
+            }
+        }
+
+        return (true, $"Reminder sent to {sent} flatmate(s)", sent);
     }
 
     // ───────────── ADD / DEACTIVATE BILL (admin) ─────────────

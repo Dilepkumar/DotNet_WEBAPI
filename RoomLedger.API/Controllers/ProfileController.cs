@@ -19,13 +19,15 @@ public class ProfileController : ControllerBase
     private readonly IPasswordHasher _hasher;      
     private readonly IWebHostEnvironment _env;
     private readonly IouService _iouService;
+    private readonly ICloudStorageService _cloud;
 
-    public ProfileController(IApplicationDbContext db, IPasswordHasher hasher, IWebHostEnvironment env, IouService iouService)
+    public ProfileController(IApplicationDbContext db, IPasswordHasher hasher, IWebHostEnvironment env, IouService iouService, ICloudStorageService cloud)
     { 
         _db = db; 
         _hasher = hasher; 
         _env = env; 
         _iouService = iouService;
+        _cloud = cloud;
     }
 
     private int UserId => int.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
@@ -131,30 +133,30 @@ public class ProfileController : ControllerBase
     [HttpPost("avatar")]
     public async Task<IActionResult> UploadAvatar(IFormFile file)
     {
-        if (file == null || file.Length == 0) return BadRequest(new { message = "No file" });
-        if (file.Length > 2 * 1024 * 1024) return BadRequest(new { message = "Max 2 MB" });
+        if (file == null || file.Length == 0)
+            return BadRequest(new { message = "No file provided" });
+        if (file.Length > 5 * 1024 * 1024)
+            return BadRequest(new { message = "Max file size is 5 MB" });
+
         var allowed = new[] { "image/jpeg", "image/png", "image/webp" };
-        if (!allowed.Contains(file.ContentType)) return BadRequest(new { message = "Only JPG/PNG/WebP" });
+        if (!allowed.Contains(file.ContentType))
+            return BadRequest(new { message = "Only JPG, PNG or WebP allowed" });
 
-        var u = await _db.Users.FindAsync(UserId)!;
-        var ext = Path.GetExtension(file.FileName).ToLowerInvariant();
-        var fileName = $"avatar_{UserId}_{DateTime.UtcNow.Ticks}{ext}";
-        var folder = Path.Combine(_env.WebRootPath ?? "wwwroot", "avatars");
-        Directory.CreateDirectory(folder);
+        var u = await _db.Users.FindAsync(UserId);
+        if (u == null) return NotFound();
 
-        // delete old file
-        if (!string.IsNullOrEmpty(u!.AvatarUrl))
-        {
-            var old = Path.Combine(_env.WebRootPath ?? "wwwroot", u.AvatarUrl.TrimStart('/'));
-            if (System.IO.File.Exists(old)) System.IO.File.Delete(old);
-        }
+        // Delete old avatar from Cloudinary if it exists
+        var oldPublicId = string.Empty;/*_cloud.ExtractPublicId(u.AvatarUrl);*/
+        if (oldPublicId != null)
+            await _cloud.DeleteAsync(oldPublicId);
 
-        await using var stream = System.IO.File.Create(Path.Combine(folder, fileName));
-        await file.CopyToAsync(stream);
+        // Upload new avatar to Cloudinary → roomledger/profiles folder
+        var url = await _cloud.UploadAsync(file, "roomledger/profiles");
 
-        u.AvatarUrl = $"/avatars/{fileName}";
+        u.AvatarUrl = url;
         await _db.SaveChangesAsync();
-        return Ok(new { avatarUrl = u.AvatarUrl });
+
+        return Ok(new { avatarUrl = url });
     }
 
     [HttpPost("change-password")]

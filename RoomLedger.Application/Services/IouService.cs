@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
 using RoomLedger.Application.Common.Interfaces;
 using RoomLedger.Application.DTOs;
 using RoomLedger.Domain.Common;
@@ -150,8 +150,10 @@ public class IouService
             foreach (var p in e.Participants)
             {
                 if (p.UserId == e.PaidById) continue;
+                var count = counts.GetValueOrDefault(e.Id, e.Participants?.Count ?? 1);
+                if (count <= 0) count = 1;
                 var share = p.ShareAmount
-                         ?? Math.Round(e.Amount / counts[e.Id], 2, MidpointRounding.AwayFromZero);
+                         ?? Math.Round(e.Amount / count, 2, MidpointRounding.AwayFromZero);
                 owed[(p.UserId, e.PaidById)] = owed.GetValueOrDefault((p.UserId, e.PaidById)) + share;
             }
         }
@@ -206,24 +208,65 @@ public class IouService
         var ids = iOwe.Select(d => d.CreditorId)
             .Concat(owedToMe.Select(d => d.DebtorId))
             .Distinct().ToList();
-        var names = await _db.Users
+        var users = await _db.Users
             .Where(u => ids.Contains(u.Id))
-            .ToDictionaryAsync(u => u.Id, u => u.FullName);
+            .ToDictionaryAsync(u => u.Id, u => u);
+
+        var totalOwedToMe = owedToMe.Sum(d => d.Amount);
+        var totalIOwe = iOwe.Sum(d => d.Amount);
 
         return new
         {
-            netBalance = owedToMe.Sum(d => d.Amount) - iOwe.Sum(d => d.Amount),
-            iOwe = iOwe.Select(d => new {
-                toUserId = d.CreditorId,
-                toUserName = names.GetValueOrDefault(d.CreditorId, "Unknown"),
-                amount = d.Amount
+            netBalance = totalOwedToMe - totalIOwe,
+            youAreOwed = totalOwedToMe,
+            youOwe = totalIOwe,
+            iOwe = iOwe.Select(d => {
+                var u = users.GetValueOrDefault(d.CreditorId);
+                var upi = !string.IsNullOrWhiteSpace(u?.Phone) 
+                    ? $"{u.Phone}@upi" 
+                    : (!string.IsNullOrWhiteSpace(u?.Email) ? $"{u.Email.Split('@')[0]}@okaxis" : "roommate@upi");
+                return new {
+                    toUserId = d.CreditorId,
+                    toUserName = u?.FullName ?? "Roommate",
+                    amount = d.Amount,
+                    upiId = upi
+                };
             }),
-            owedToMe = owedToMe.Select(d => new {
-                fromUserId = d.DebtorId,
-                fromUserName = names.GetValueOrDefault(d.DebtorId, "Unknown"),
-                amount = d.Amount
+            owedToMe = owedToMe.Select(d => {
+                var u = users.GetValueOrDefault(d.DebtorId);
+                var upi = !string.IsNullOrWhiteSpace(u?.Phone) 
+                    ? $"{u.Phone}@upi" 
+                    : (!string.IsNullOrWhiteSpace(u?.Email) ? $"{u.Email.Split('@')[0]}@okaxis" : "roommate@upi");
+                return new {
+                    fromUserId = d.DebtorId,
+                    fromUserName = u?.FullName ?? "Roommate",
+                    amount = d.Amount,
+                    upiId = upi
+                };
             })
         };
+    }
+
+    // ─────────────────── SEND IOU REMINDER TO DEBTOR ───────────────────
+    public async Task<(bool ok, string message)> RemindDebtorAsync(int groupId, int creditorId, int debtorId)
+    {
+        var matrix = await GetDebtMatrixAsync(groupId);
+        var debt = matrix.FirstOrDefault(d => d.DebtorId == debtorId && d.CreditorId == creditorId);
+        if (debt == null || debt.Amount <= 0)
+            return (false, "No outstanding debt found for this member");
+
+        var creditor = await _db.Users.FindAsync(creditorId);
+        var creditorName = creditor?.FullName ?? "Your flatmate";
+
+        await _notifications.PushAsync(
+            debtorId,
+            groupId,
+            "IOU Payment Reminder",
+            $"{creditorName} sent a friendly reminder to settle ₹{debt.Amount:0.##} for shared expenses.",
+            "IouReminder"
+        );
+
+        return (true, "Reminder sent successfully");
     }
     public async Task<(bool ok, string message)> VoidExpenseAsync(int groupId, int userId, int expenseId, VoidDto dto)
     {
