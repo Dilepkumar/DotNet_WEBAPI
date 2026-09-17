@@ -32,9 +32,39 @@ public class BillsService
             BillName = dto.BillName,
             Amount = dto.Amount,
             DueDayOfMonth = dto.DueDayOfMonth,
-            NextBillingMonth = dto.BillingMonth
+            NextBillingMonth = dto.BillingMonth,
+            PaidFromPool = dto.PayFromPool
         };
         _db.RecurringBills.Add(bill);
+
+        if (dto.PayFromPool)
+        {
+            var category = await _db.ExpenseCategories.FirstOrDefaultAsync(c => c.Name.ToLower().Contains("utilit") || c.Name.ToLower().Contains("bill"));
+            var catName = category?.Name ?? "Utilities & Bills";
+            var catId = category?.Id;
+
+            var poolExpense = new PoolExpense
+            {
+                GroupId = groupId,
+                RecordedByUserId = userId,
+                PaidByUserId = null, // Central Room Pool
+                PayerName = "Central Pool",
+                Description = $"[Bill] {dto.BillName}",
+                TotalAmount = dto.Amount,
+                ExpenseDate = dto.BillingMonth,
+                Category = catName,
+                IsReimbursed = true
+            };
+            poolExpense.Items.Add(new ExpenseItem
+            {
+                ExpenseCategoryId = catId,
+                ItemName = dto.BillName,
+                Quantity = 1,
+                Amount = dto.Amount
+            });
+            _db.PoolExpenses.Add(poolExpense);
+        }
+
         await _db.SaveChangesAsync();
 
         // Immediately generate splits for the active members for this billing month
@@ -54,13 +84,19 @@ public class BillsService
                     GroupId = groupId,
                     BillingMonth = billingMonthStr,
                     UserId = uid,
-                    ShareAmount = perHead
+                    ShareAmount = perHead,
+                    IsPaid = dto.PayFromPool,
+                    PaidAt = dto.PayFromPool ? DateTime.UtcNow : null
                 });
             }
             await _db.SaveChangesAsync();
         }
 
-        return (true, "Bill created and split across flatmates", new { billId = bill.Id });
+        var successMessage = dto.PayFromPool
+            ? $"Bill created and ₹{dto.Amount} paid directly from Central Room Pool!"
+            : "Bill created and split across flatmates";
+
+        return (true, successMessage, new { billId = bill.Id, paidFromPool = dto.PayFromPool });
     }
 
     // ───────────── GENERATE SPLITS for a month (per-member checklist rows) ─────────────
@@ -155,6 +191,7 @@ public class BillsService
                 BillName = s.RecurringBill!.BillName,
                 TotalAmount = s.RecurringBill.Amount,
                 DueDay = s.RecurringBill.DueDayOfMonth,
+                PaidFromPool = s.RecurringBill.PaidFromPool,
                 s.UserId,
                 UserName = s.User.FullName,
                 s.ShareAmount,
@@ -166,7 +203,7 @@ public class BillsService
         return new
         {
             month = billingMonth,
-            bills = rows.GroupBy(r => new { r.RecurringBillId, r.BillName, r.TotalAmount, r.DueDay })
+            bills = rows.GroupBy(r => new { r.RecurringBillId, r.BillName, r.TotalAmount, r.DueDay, r.PaidFromPool })
                         .Select(g => new
                         {
                             billId = g.Key.RecurringBillId,
@@ -174,6 +211,7 @@ public class BillsService
                             billName = g.Key.BillName,
                             totalAmount = g.Key.TotalAmount,
                             dueDay = g.Key.DueDay,
+                            paidFromPool = g.Key.PaidFromPool,
                             perHead = g.First().ShareAmount, 
                             totalPaid = g.Count(x => x.IsPaid),
                             memberCount = g.Count(),

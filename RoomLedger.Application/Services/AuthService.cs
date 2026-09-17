@@ -278,15 +278,17 @@ public class AuthService
     }
     public async Task<(bool ok, string message, string? devOtp)> ForgotPasswordAsync(ForgotPasswordDto dto)
     {
+        if (string.IsNullOrWhiteSpace(dto.Email) || !dto.Email.Contains('@'))
+            return (false, "Please enter a valid email address.", null);
+
         var email = dto.Email.Trim().ToLower();
         var user = await _db.Users.FirstOrDefaultAsync(u => u.Email == email);
 
-        // ⚠️ same response whether or not the account exists (prevents user enumeration)
         if (user == null)
-            return (true, "If that email exists, a reset code has been sent", null);
+            return (false, "This email is not registered. Please check the email or sign up.", null);
 
-        var devOtp = await CreateOtpAsync(email, OtpPurpose.PasswordReset);   // ← reuse your OTP creator
-        return (true, "If that email exists, a reset code has been sent", devOtp);
+        var devOtp = await CreateOtpAsync(email, OtpPurpose.PasswordReset);
+        return (true, "Password reset code has been sent to your email.", devOtp);
     }
     public async Task<(bool ok, string message)> ResetPasswordAsync(ResetPasswordDto dto)
     {

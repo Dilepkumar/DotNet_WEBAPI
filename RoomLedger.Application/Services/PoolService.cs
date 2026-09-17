@@ -157,9 +157,53 @@ public class PoolService
         _db.PoolExpenses.Add(expense);
         await _db.SaveChangesAsync();
 
-        var successMsg = paidByUserId.HasValue
-            ? $"Expense logged: Reimbursed ₹{total} to {payerName} from pool fund"
-            : $"Expense of ₹{total} logged from Central Pool";
+        if (dto.RecordInBills)
+        {
+            var expDate = expense.ExpenseDate;
+            var monthStr = expDate.ToString("yyyy-MM");
+            var dueDay = Math.Clamp(expDate.Day, 1, 28);
+
+            var recurringBill = new RecurringBill
+            {
+                GroupId = groupId,
+                BillName = dto.Description.Trim(),
+                Amount = total,
+                DueDayOfMonth = dueDay,
+                NextBillingMonth = expDate,
+                PaidFromPool = true
+            };
+            _db.RecurringBills.Add(recurringBill);
+            await _db.SaveChangesAsync();
+
+            var activeMembers = await _db.GroupMembers
+                .Where(m => m.GroupId == groupId && m.Status == MemberStatus.Active)
+                .Select(m => m.UserId).ToListAsync();
+
+            if (activeMembers.Count > 0)
+            {
+                var perHead = Math.Round(total / activeMembers.Count, 2, MidpointRounding.AwayFromZero);
+                foreach (var uid in activeMembers)
+                {
+                    _db.BillSplits.Add(new BillSplit
+                    {
+                        RecurringBillId = recurringBill.Id,
+                        GroupId = groupId,
+                        BillingMonth = monthStr,
+                        UserId = uid,
+                        ShareAmount = perHead,
+                        IsPaid = true,
+                        PaidAt = DateTime.UtcNow
+                    });
+                }
+                await _db.SaveChangesAsync();
+            }
+        }
+
+        var successMsg = dto.RecordInBills
+            ? $"Expense of ₹{total} logged from Central Pool & recorded in Fixed Recurring Bills!"
+            : (paidByUserId.HasValue
+                ? $"Expense logged: Reimbursed ₹{total} to {payerName} from pool fund"
+                : $"Expense of ₹{total} logged from Central Pool");
 
         return (true, successMsg);
     }
@@ -859,7 +903,7 @@ public class PoolService
                 e.ReceiptUrl,
                 e.Category,
                 e.IsReimbursed,
-                Items = e.Items.Select(i => new { i.Id, i.ItemName, i.Amount }).ToList()
+                Items = e.Items.Select(i => new { i.Id, i.ItemName, i.Quantity, i.Amount }).ToList()
             })
             .ToListAsync();
 

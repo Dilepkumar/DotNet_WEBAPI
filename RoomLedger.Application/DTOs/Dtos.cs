@@ -16,7 +16,7 @@ public record LoginDto(
     [Required] string Password);
 public record CreateGroupDto(string GroupName, decimal MonthlyPoolTarget, string? Address = null);
 public record JoinGroupDto(string Code);
-public record BillDto(string BillName, decimal Amount, DateOnly BillingMonth, int DueDayOfMonth);
+public record BillDto(string BillName, decimal Amount, DateOnly BillingMonth, int DueDayOfMonth, bool PayFromPool = false);
 public record ContributeDto(
     decimal Amount,
     string? TransactionRef = null,
@@ -32,7 +32,8 @@ public record PoolExpenseDto(
     string? ReceiptUrl = null,
     int? PaidByUserId = null,
     string? PayerType = null,
-    List<string>? SharedMemberIds = null);
+    List<string>? SharedMemberIds = null,
+    bool RecordInBills = false);
 public record SettleUpDto(int PayeeId, decimal Amount, string? TransactionRef);
 public record FlexibleSettleDto(int? PayeeId, int? ToUserId, decimal Amount, string? TransactionRef, string? Note, int? PayerId = null, int? FromUserId = null);
 public record TransferDto(int FromUserId, int ToUserId, decimal Amount);
