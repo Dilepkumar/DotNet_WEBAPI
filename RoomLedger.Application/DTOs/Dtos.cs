@@ -22,13 +22,14 @@ public record ContributeDto(
     string? TransactionRef = null,
     string? Message = null,
     List<int>? MemberUserIds = null,
-    string? Mode = null);
+    string? Mode = null,
+    bool AutoApprove = false);
 public record PoolItemDto(int? CategoryId, string ItemName, decimal Amount, decimal? Quantity = 1);
 public record PoolExpenseDto(
     string Description, 
     string ExpenseDate, 
     List<PoolItemDto> Items,
-    string? Category = null,
+    string?Category = null,
     string? ReceiptUrl = null,
     int? PaidByUserId = null,
     string? PayerType = null,

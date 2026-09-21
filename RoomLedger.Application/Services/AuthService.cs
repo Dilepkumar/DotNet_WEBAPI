@@ -69,7 +69,7 @@ public class AuthService
             Email = email,
             Phone = phone,
             PasswordHash = _hasher.Hash(dto.Password),
-            IsEmailVerified = false
+            IsEmailVerified = true
         };
         _db.Users.Add(user);
         await _db.SaveChangesAsync();
@@ -84,8 +84,6 @@ public class AuthService
                 await _db.SaveChangesAsync();
             }
         }
-
-        var devOtp = await CreateOtpAsync(user.Email, OtpPurpose.Registration);
 
         // Send Welcome email to newly registered customer
         try
@@ -105,10 +103,9 @@ public class AuthService
         var (refreshRaw, _) = await IssueRefreshTokenAsync(user.Id);
         return (true, "Registration successful", new
         {
-            token = _jwt.CreateToken(user.Id, user.Email),
+            token = GenerateJwt(user),
             refreshToken = refreshRaw,
-            user = new { id = user.Id, fullName = user.FullName, email = user.Email, phone = user.Phone },
-            devOtp = devOtp
+            user = new { id = user.Id, fullName = user.FullName, email = user.Email, phone = user.Phone }
         });
     }
     public async Task<(bool ok, string message, object? result)> VerifyOtpAsync(VerifyOtpDto dto, OtpPurpose purpose = OtpPurpose.Registration)
@@ -136,7 +133,7 @@ public class AuthService
             var (refreshRaw, _) = await IssueRefreshTokenAsync(user.Id);
             result = new
             {
-                token = _jwt.CreateToken(user.Id, user.Email),
+                token = GenerateJwt(user),
                 refreshToken = refreshRaw,
                 user = new { id = user.Id, fullName = user.FullName, email = user.Email, phone = user.Phone }
             };
@@ -167,7 +164,7 @@ public class AuthService
         var (refreshRaw, _) = await IssueRefreshTokenAsync(user.Id);
         return (true, "Login successful", new
         {
-            token = _jwt.CreateToken(user.Id, user.Email),
+            token = GenerateJwt(user),
             refreshToken = refreshRaw,
             user = new { id = user.Id, fullName = user.FullName, email = user.Email, phone = user.Phone }
         });
@@ -183,7 +180,8 @@ public class AuthService
         }
 
         var code = await CreateOtpAsync(cleanEmail, purpose);
-        return (true, "OTP code sent to email", code);
+        var autoFillDevOtp = _config.GetValue<bool>("Auth:AutoFillDevOtp", false);
+        return (true, "OTP code sent to email", autoFillDevOtp ? code : null);
     }
 
     private async Task<string> CreateOtpAsync(string email, OtpPurpose purpose)
@@ -222,9 +220,22 @@ public class AuthService
         var stored = await _db.RefreshTokens
             .FirstOrDefaultAsync(r => r.TokenHash == incomingHash);
 
-        // ── REUSE DETECTION: token was already rotated/revoked → kill whole family
+        // ── REUSE DETECTION: token was already rotated/revoked → kill whole family (with 60s grace period for concurrent requests)
         if (stored != null && stored.RevokedAt != null)
         {
+            // RFC 6749 BCP: Grace period for concurrent requests on app/tab resume
+            if (stored.RevokedAt > DateTime.UtcNow.AddSeconds(-60))
+            {
+                var u = await _db.Users.FirstOrDefaultAsync(x => x.Id == stored.UserId);
+                if (u != null)
+                {
+                    var (reissuedRefreshRaw, _) = await IssueRefreshTokenAsync(u.Id);
+                    await _db.SaveChangesAsync();
+                    var newJwt = GenerateJwt(u);
+                    return (true, new RefreshResponseDto(newJwt, reissuedRefreshRaw));
+                }
+            }
+
             var family = await _db.RefreshTokens
                 .Where(r => r.UserId == stored.UserId && r.RevokedAt == null).ToListAsync();
             foreach (var r in family) r.RevokedAt = DateTime.UtcNow;
@@ -256,22 +267,25 @@ public class AuthService
     }
     private string GenerateJwt(User user)
     {
-        var key = new SymmetricSecurityKey(
-            Encoding.UTF8.GetBytes(_config["Jwt:Key"]!));
+        var secret = _config["Jwt:Secret"] ?? _config["Jwt:Key"]
+            ?? throw new InvalidOperationException("JWT Secret is not configured in application settings (Jwt:Secret).");
+        var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(secret));
         var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
 
         var claims = new List<Claim>
-    {
-        new(ClaimTypes.NameIdentifier, user.Id.ToString()),
-        new(ClaimTypes.Email, user.Email),
-        new(ClaimTypes.Name, user.FullName)
-    };
+        {
+            new(ClaimTypes.NameIdentifier, user.Id.ToString()),
+            new(ClaimTypes.Email, user.Email),
+            new(ClaimTypes.Name, user.FullName)
+        };
+
+        var minutes = int.TryParse(_config["Jwt:AccessTokenMinutes"] ?? _config["Jwt:ExpiryMinutes"], out var m) ? m : 15;
 
         var token = new JwtSecurityToken(
             issuer: _config["Jwt:Issuer"],
             audience: _config["Jwt:Audience"],
             claims: claims,
-            expires: DateTime.UtcNow.AddMinutes(15),
+            expires: DateTime.UtcNow.AddMinutes(minutes),
             signingCredentials: creds);
 
         return new JwtSecurityTokenHandler().WriteToken(token);
@@ -287,7 +301,11 @@ public class AuthService
         if (user == null)
             return (false, "This email is not registered. Please check the email or sign up.", null);
 
-        var devOtp = await CreateOtpAsync(email, OtpPurpose.PasswordReset);
+        var code = await CreateOtpAsync(email, OtpPurpose.PasswordReset);
+
+        var autoFillDevOtp = _config.GetValue<bool>("Auth:AutoFillDevOtp", false);
+        var devOtp = autoFillDevOtp ? code : null;
+
         return (true, "Password reset code has been sent to your email.", devOtp);
     }
     public async Task<(bool ok, string message)> ResetPasswordAsync(ResetPasswordDto dto)

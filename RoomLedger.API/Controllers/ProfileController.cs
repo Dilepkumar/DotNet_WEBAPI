@@ -60,6 +60,7 @@ public class ProfileController : ControllerBase
         decimal owedToYou = 0;
         string? inviteCode = null;
         int? activeGroupId = null;
+        object members = Array.Empty<object>();
 
         if (membership != null)
         {
@@ -74,7 +75,32 @@ public class ProfileController : ControllerBase
                 inviteCode = grp.InviteCode;
             }
 
-            memberCount = await _db.GroupMembers.CountAsync(m => m.GroupId == membership.GroupId && m.Status == MemberStatus.Active);
+            var memberRows = await _db.GroupMembers.Where(m => m.GroupId == membership.GroupId && m.Status == MemberStatus.Active).ToListAsync();
+
+            memberCount = memberRows.Count;
+
+            var userIds = memberRows.Where(m => !(m.IsAlias ?? false) && m.UserId > 0).Select(m => m.UserId).Distinct().ToList();
+            var userMap = await _db.Users.Where(x => userIds.Contains(x.Id)).ToDictionaryAsync(x => x.Id, x => x);
+
+            members = memberRows.Select(m =>
+            {
+                var isAl = m.IsAlias ?? false;
+                var userObj = userMap.GetValueOrDefault(m.UserId);
+                var mName = isAl ? (m.AliasName ?? "Roommate") : (userObj?.FullName ?? "Roommate");
+                var mEmail = isAl ? "" : (userObj?.Email ?? "");
+                var mPhone = isAl ? "" : (userObj?.Phone ?? "");
+                var mAvatar = isAl ? null : userObj?.AvatarUrl;
+                return new
+                {
+                    id = m.UserId,
+                    name = mName,
+                    email = mEmail,
+                    phone = mPhone,
+                    role = m.Role == MemberRole.Admin ? "Admin" : "Member",
+                    isAlias = isAl,
+                    avatarUrl = mAvatar
+                };
+            }).ToList();
 
             try
             {
@@ -108,6 +134,7 @@ public class ProfileController : ControllerBase
             roomAddress = roomAddress,
             roomRole = roomRole,
             memberCount = memberCount,
+            members = members,
             owedToYou = owedToYou,
             inviteCode = inviteCode,
             groupId = activeGroupId

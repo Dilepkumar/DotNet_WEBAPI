@@ -24,6 +24,7 @@ public class PoolService
             return (false, "You are not an active member of this group");
 
         var isAdmin = await IsAdminAsync(groupId, userId);
+        var shouldApprove = isAdmin || dto.AutoApprove;
         var currentMonth = DateTime.UtcNow.ToString("yyyy-MM");
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
         var note = !string.IsNullOrWhiteSpace(dto.Message) ? dto.Message.Trim() : dto.TransactionRef?.Trim();
@@ -51,14 +52,14 @@ public class PoolService
                     PeriodMonth = currentMonth,
                     TransactionRef = note,
                     Message = note,
-                    Status = isAdmin ? ContributionStatus.Approved : ContributionStatus.Pending,
-                    ApprovedByUserId = isAdmin ? userId : null,
-                    ApprovedAt = isAdmin ? DateTime.UtcNow : null
+                    Status = shouldApprove ? ContributionStatus.Approved : ContributionStatus.Pending,
+                    ApprovedByUserId = shouldApprove ? userId : null,
+                    ApprovedAt = shouldApprove ? DateTime.UtcNow : null
                 });
             }
 
             await _db.SaveChangesAsync();
-            return (true, isAdmin
+            return (true, shouldApprove
                 ? $"Added ₹{totalAdded:N0} to Pool ({count} members × ₹{perPersonAmount:N0})"
                 : $"Submitted contribution for {count} members — waiting for admin approval");
         }
@@ -73,13 +74,13 @@ public class PoolService
                 PeriodMonth = currentMonth,
                 TransactionRef = note,
                 Message = note,
-                Status = isAdmin ? ContributionStatus.Approved : ContributionStatus.Pending,
-                ApprovedByUserId = isAdmin ? userId : null,
-                ApprovedAt = isAdmin ? DateTime.UtcNow : null
+                Status = shouldApprove ? ContributionStatus.Approved : ContributionStatus.Pending,
+                ApprovedByUserId = shouldApprove ? userId : null,
+                ApprovedAt = shouldApprove ? DateTime.UtcNow : null
             });
 
             await _db.SaveChangesAsync();
-            return (true, isAdmin ? $"Added ₹{dto.Amount:N0} to Pool" : "Contribution submitted — waiting for admin approval");
+            return (true, shouldApprove ? $"Added ₹{dto.Amount:N0} to Pool" : "Contribution submitted — waiting for admin approval");
         }
     }
 
