@@ -194,6 +194,17 @@ public class IouService
             TransactionRef = dto.TransactionRef
         });
         await _db.SaveChangesAsync();
+
+        var payer = await _db.Users.FindAsync(fromUserId);
+        var payerName = payer?.FullName ?? "Your flatmate";
+        await _notifications.PushAsync(
+            dto.PayeeId,
+            groupId,
+            "Payment Settlement Recorded",
+            $"{payerName} recorded a payment of ₹{dto.Amount:0.##}.",
+            "IouSettlement"
+        );
+
         return (true, "Settlement recorded");
     }
 
@@ -222,26 +233,20 @@ public class IouService
             youOwe = totalIOwe,
             iOwe = iOwe.Select(d => {
                 var u = users.GetValueOrDefault(d.CreditorId);
-                var upi = !string.IsNullOrWhiteSpace(u?.Phone) 
-                    ? $"{u.Phone}@upi" 
-                    : (!string.IsNullOrWhiteSpace(u?.Email) ? $"{u.Email.Split('@')[0]}@okaxis" : "roommate@upi");
                 return new {
                     toUserId = d.CreditorId,
                     toUserName = u?.FullName ?? "Roommate",
                     amount = d.Amount,
-                    upiId = upi
+                    upiId = u?.UpiId
                 };
             }),
             owedToMe = owedToMe.Select(d => {
                 var u = users.GetValueOrDefault(d.DebtorId);
-                var upi = !string.IsNullOrWhiteSpace(u?.Phone) 
-                    ? $"{u.Phone}@upi" 
-                    : (!string.IsNullOrWhiteSpace(u?.Email) ? $"{u.Email.Split('@')[0]}@okaxis" : "roommate@upi");
                 return new {
                     fromUserId = d.DebtorId,
                     fromUserName = u?.FullName ?? "Roommate",
                     amount = d.Amount,
-                    upiId = upi
+                    upiId = u?.UpiId
                 };
             })
         };

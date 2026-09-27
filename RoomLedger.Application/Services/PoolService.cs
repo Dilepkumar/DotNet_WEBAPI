@@ -200,6 +200,51 @@ public class PoolService
             }
         }
 
+        // Low Balance Threshold Alert Check
+        var totalContributed = await _db.PoolContributions
+            .Where(c => c.GroupId == groupId && c.Status == ContributionStatus.Approved)
+            .SumAsync(c => (decimal?)c.Amount) ?? 0m;
+        var totalSpent = await _db.PoolExpenses
+            .Where(e => e.GroupId == groupId && !e.IsVoided && (!e.PaidByUserId.HasValue || e.IsReimbursed))
+            .SumAsync(e => (decimal?)e.TotalAmount) ?? 0m;
+        var remainingPool = totalContributed - totalSpent;
+
+        var grp = await _db.Groups.FindAsync(groupId);
+        var targetAmt = grp?.MonthlyPoolTarget ?? 0m;
+        var threshold = targetAmt > 0 ? (targetAmt * 0.20m) : 500m;
+
+        if (remainingPool <= threshold)
+        {
+            var recentAlertCutoff = DateTime.UtcNow.AddHours(-18);
+            var alreadyNotified = await _db.Notifications.AnyAsync(n =>
+                n.Type == "pool_low_balance" && n.CreatedAt > recentAlertCutoff);
+
+            if (!alreadyNotified)
+            {
+                var members = await _db.GroupMembers
+                    .Where(m => m.GroupId == groupId && m.Status == MemberStatus.Active)
+                    .Select(m => m.UserId)
+                    .ToListAsync();
+
+                var alertText = targetAmt > 0
+                    ? $"⚠️ Low Pool Alert: Only ₹{remainingPool:F2} remaining ({Math.Max(0, Math.Round((remainingPool / targetAmt) * 100))}% of ₹{targetAmt:N0} target). Please contribute to cover upcoming daily expenses."
+                    : $"⚠️ Low Pool Alert: Only ₹{remainingPool:F2} remaining in the pool fund. Please contribute to cover upcoming expenses.";
+
+                foreach (var memberId in members)
+                {
+                    _db.Notifications.Add(new Notification
+                    {
+                        UserId = memberId,
+                        Title = "Low Pool Fund Balance",
+                        Message = alertText,
+                        Type = "pool_low_balance",
+                        CreatedAt = DateTime.UtcNow
+                    });
+                }
+                await _db.SaveChangesAsync();
+            }
+        }
+
         var successMsg = dto.RecordInBills
             ? $"Expense of ₹{total} logged from Central Pool & recorded in Fixed Recurring Bills!"
             : (paidByUserId.HasValue
@@ -362,6 +407,112 @@ public class PoolService
         await _audit.LogAsync("PoolExpense", e.Id, "Void", old, null, userId, dto.Reason);
         return (true, "Pool expense voided — balance restored");
     }
+
+    public async Task<(bool ok, string message)> EditExpenseAsync(int groupId, int userId, int expenseId, EditPoolExpenseDto dto)
+    {
+        if (!await IsAdminAsync(groupId, userId))
+            return (false, "Only group Admin can edit pool expenses");
+
+        if (string.IsNullOrWhiteSpace(dto.Description))
+            return (false, "Expense description is required");
+
+        var e = await _db.PoolExpenses.Include(x => x.Items)
+            .FirstOrDefaultAsync(x => x.Id == expenseId && x.GroupId == groupId);
+        if (e == null) return (false, "Expense not found");
+        if (e.IsVoided) return (false, "Cannot edit a voided expense. Please record a new expense if needed.");
+
+        // Enforce: only the last recorded pool expense can be edited
+        var latestExpense = await _db.PoolExpenses
+            .Where(x => x.GroupId == groupId && !x.IsVoided)
+            .OrderByDescending(x => x.ExpenseDate)
+            .ThenByDescending(x => x.CreatedAt)
+            .ThenByDescending(x => x.Id)
+            .FirstOrDefaultAsync();
+
+        if (latestExpense == null || latestExpense.Id != expenseId)
+        {
+            return (false, "Only the last recorded pool expense can be edited. Earlier transactions are locked to preserve ledger integrity.");
+        }
+
+        var oldSnapshot = new
+        {
+            e.Description,
+            e.TotalAmount,
+            ExpenseDate = e.ExpenseDate.ToString("yyyy-MM-dd"),
+            e.Category,
+            ItemCount = e.Items.Count
+        };
+
+        // 1. Calculate new total: either from provided Items or direct Amount
+        decimal newTotal = 0;
+        if (dto.Items != null && dto.Items.Count > 0)
+        {
+            newTotal = dto.Items.Sum(i => i.Amount);
+        }
+        else if (dto.Amount.HasValue && dto.Amount.Value > 0)
+        {
+            newTotal = dto.Amount.Value;
+        }
+        else
+        {
+            newTotal = e.TotalAmount;
+        }
+
+        if (newTotal <= 0)
+            return (false, "Expense amount must be greater than zero");
+
+        e.Description = dto.Description.Trim();
+        e.TotalAmount = newTotal;
+
+        if (!string.IsNullOrWhiteSpace(dto.ExpenseDate) && DateOnly.TryParse(dto.ExpenseDate, out var parsedDate))
+        {
+            e.ExpenseDate = parsedDate;
+        }
+
+        if (!string.IsNullOrWhiteSpace(dto.Category))
+        {
+            e.Category = dto.Category.Trim();
+        }
+
+        if (!string.IsNullOrWhiteSpace(dto.ReceiptUrl))
+        {
+            e.ReceiptUrl = dto.ReceiptUrl.Trim();
+        }
+
+        // 2. Update line items if provided
+        if (dto.Items != null && dto.Items.Count > 0)
+        {
+            _db.ExpenseItems.RemoveRange(e.Items);
+            e.Items = dto.Items.Select(i => new ExpenseItem
+            {
+                ExpenseCategoryId = i.CategoryId,
+                ItemName = string.IsNullOrWhiteSpace(i.ItemName) ? e.Description : i.ItemName.Trim(),
+                Quantity = i.Quantity ?? 1m,
+                Amount = i.Amount
+            }).ToList();
+        }
+        else if (e.Items.Count == 1)
+        {
+            var singleItem = e.Items.First();
+            singleItem.ItemName = e.Description;
+            singleItem.Amount = newTotal;
+        }
+
+        await _db.SaveChangesAsync();
+
+        var newSnapshot = new
+        {
+            e.Description,
+            e.TotalAmount,
+            ExpenseDate = e.ExpenseDate.ToString("yyyy-MM-dd"),
+            e.Category,
+            ItemCount = e.Items.Count
+        };
+
+        await _audit.LogAsync("PoolExpense", e.Id, "Edit", oldSnapshot, newSnapshot, userId, dto.Reason ?? "Admin edited pool expense");
+
+        return (true, $"Pool expense updated successfully. New total: ₹{newTotal:F2}");
+    }
     private async Task<bool> IsAdminAsync(int groupId, int userId) =>
         await _db.GroupMembers.AnyAsync(m =>
             m.GroupId == groupId && m.UserId == userId && m.Role == MemberRole.Admin && m.Status == MemberStatus.Active);
@@ -397,6 +548,7 @@ public class PoolService
             {
                 m.UserId,
                 m.MonthlyPoolShare,
+                m.Role,
                 IsAlias = m.IsAlias ?? false,
                 AliasName = m.AliasName ?? string.Empty
             }).ToListAsync();
@@ -431,7 +583,9 @@ public class PoolService
                 expectedThisMonth = expected,
                 hasPaidTarget = expected > 0 && contributedThisMonth >= expected,
                 pendingAmount = Math.Max(0, expected - contributedThisMonth),
-                isAlias = m.IsAlias
+                isAlias = m.IsAlias,
+                role = m.Role.ToString(),
+                isAdmin = m.Role == MemberRole.Admin
             };
         }).ToList();
 
@@ -695,12 +849,18 @@ public class PoolService
             percentage = maxMonth > 0 ? Math.Round((double)(m.total / maxMonth) * 100, 1) : 0
         }).ToList();
 
+        var balance = contributed - spent;
+        var lowThreshold = target > 0 ? (target * 0.20m) : 500m;
+        var isLowBalance = balance <= lowThreshold;
+
         return new
         {
             isAdmin,
             pendingItems,
-            currentBalance = contributed - spent,
+            currentBalance = balance,
             monthlyTarget = target,
+            isLowBalance,
+            lowThreshold,
             totalContributions = contributed,
             totalSpent = spent,
             pendingReimbursementsTotal,

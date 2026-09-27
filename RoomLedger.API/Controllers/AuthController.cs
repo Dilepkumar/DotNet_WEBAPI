@@ -50,10 +50,13 @@ public class AuthController : ControllerBase
     }
 
     [HttpPost("logout")]
-    //[Authorize]
+    [Authorize]
     public async Task<IActionResult> Logout()
     {
-        var me = int.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
+        var rawId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (string.IsNullOrEmpty(rawId) || !int.TryParse(rawId, out var me))
+            return Unauthorized(new { message = "Invalid or expired session" });
+
         var (ok, msg) = await _auth.LogoutAsync(me);
         return Ok(new { message = msg });
     }

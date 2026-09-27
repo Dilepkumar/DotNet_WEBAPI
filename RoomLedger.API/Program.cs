@@ -3,6 +3,7 @@ using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi;
 using RoomLedger.Application;
 using RoomLedger.Application.Common.Interfaces;
+using RoomLedger.API.Hubs;
 using RoomLedger.API.Services;
 using RoomLedger.Infrastructure;
 using System.Text;
@@ -61,6 +62,10 @@ builder.Services.AddApplication();                           // App services (Au
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<ICurrentUserService, CurrentUserService>();
 
+// ───────────── SignalR Real-Time Collaboration ─────────────
+builder.Services.AddSignalR();
+builder.Services.AddScoped<ILedgerBroadcastService, LedgerBroadcastService>();
+
 // ───────────── JWT Authentication ─────────────
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(o =>
@@ -74,6 +79,19 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             ValidateIssuerSigningKey = true,
             IssuerSigningKey = new SymmetricSecurityKey(
                 Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Secret"]!))
+        };
+        o.Events = new JwtBearerEvents
+        {
+            OnMessageReceived = context =>
+            {
+                var accessToken = context.Request.Query["access_token"];
+                var path = context.HttpContext.Request.Path;
+                if (!string.IsNullOrEmpty(accessToken) && path.StartsWithSegments("/hubs"))
+                {
+                    context.Token = accessToken;
+                }
+                return Task.CompletedTask;
+            }
         };
     });
 builder.Services.AddAuthorization();
@@ -91,5 +109,6 @@ app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();
+app.MapHub<LedgerHub>("/hubs/ledger");
 
 app.Run();

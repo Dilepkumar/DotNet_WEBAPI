@@ -1,14 +1,16 @@
-﻿using System.Security.Claims;
+using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using RoomLedger.Application.Common.Interfaces;
+using RoomLedger.API.Infrastructure.Filters;
 
 namespace RoomLedger.API.Controllers;
 
 [ApiController]
 [Route("api/groups/{groupId:int}/audit")]
 [Authorize]
+[RequireGroupMember]
 public class AuditController : ControllerBase
 {
     private readonly IApplicationDbContext _db;

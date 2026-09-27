@@ -1,4 +1,4 @@
-﻿using RoomLedger.Domain.Common;
+using RoomLedger.Domain.Common;
 
 namespace RoomLedger.Domain.Entities;
 
@@ -13,6 +13,7 @@ public class User : BaseEntity
     public DateTime? DateOfBirth { get; set; }
     public Gender? Gender { get; set; }
     public string? AvatarUrl { get; set; }
+    public string? UpiId { get; set; }
     public ICollection<Settlement> SettlementsSent { get; set; } = new List<Settlement>();
     public ICollection<Settlement> SettlementsReceived { get; set; } = new List<Settlement>();
 }

@@ -313,9 +313,7 @@ public class DashboardService
         {
             var debtor = usersMap.GetValueOrDefault(d.FromUserId);
             var creditor = usersMap.GetValueOrDefault(d.ToUserId);
-            var creditorEmail = creditor?.Email ?? "";
-            var userPrefix = !string.IsNullOrEmpty(creditorEmail) ? creditorEmail.Split('@')[0] : "user";
-            var upiId = $"{userPrefix}@okhdfcbank";
+            var upiId = creditor?.UpiId;
 
             return new DashboardIouDebtDto(
                 d.FromUserId,

@@ -4,12 +4,14 @@ using Microsoft.AspNetCore.Mvc;
 using RoomLedger.Application.Common.Interfaces;
 using RoomLedger.Application.DTOs;
 using RoomLedger.Application.Services;
+using RoomLedger.API.Infrastructure.Filters;
 
 namespace RoomLedger.API.Controllers;
 
 [ApiController]
 [Route("api/groups/{groupId:int}/pool")]
 [Authorize]
+[RequireGroupMember]
 public class PoolController : ControllerBase
 {
     private readonly PoolService _pool;
@@ -86,6 +88,14 @@ public class PoolController : ControllerBase
     public async Task<IActionResult> Void(int groupId, int expenseId, VoidDto dto)
     {
         var (ok, msg) = await _pool.VoidExpenseAsync(groupId, Me, expenseId, dto);
+        return ok ? Ok(new { message = msg }) : BadRequest(new { message = msg });
+    }
+
+    [HttpPut("expenses/{expenseId:int}")]
+    [HttpPost("expenses/{expenseId:int}/edit")]
+    public async Task<IActionResult> Edit(int groupId, int expenseId, EditPoolExpenseDto dto)
+    {
+        var (ok, msg) = await _pool.EditExpenseAsync(groupId, Me, expenseId, dto);
         return ok ? Ok(new { message = msg }) : BadRequest(new { message = msg });
     }
     [HttpGet("pending-contributions")]

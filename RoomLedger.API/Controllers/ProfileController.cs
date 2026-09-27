@@ -98,7 +98,8 @@ public class ProfileController : ControllerBase
                     phone = mPhone,
                     role = m.Role == MemberRole.Admin ? "Admin" : "Member",
                     isAlias = isAl,
-                    avatarUrl = mAvatar
+                    avatarUrl = mAvatar,
+                    upiId = userObj?.UpiId
                 };
             }).ToList();
 
@@ -113,8 +114,7 @@ public class ProfileController : ControllerBase
             }
         }
 
-        var userPrefix = !string.IsNullOrEmpty(u.Email) ? u.Email.Split('@')[0] : u.FullName.ToLower().Replace(" ", "");
-        var upiId = $"{userPrefix}@okhdfcbank";
+        var upiId = !string.IsNullOrWhiteSpace(u.UpiId) ? u.UpiId : null;
 
         var nameParts = u.FullName.Trim().Split(' ');
         var nickname = nameParts.Length > 1 ? string.Concat(nameParts.Select(p => p[0])).ToUpper() : u.FullName;
@@ -152,6 +152,8 @@ public class ProfileController : ControllerBase
         u.Gender = ParseGender(dto.Gender);
         if (!string.IsNullOrWhiteSpace(dto.Phone))
             u.Phone = dto.Phone.Trim();
+        if (dto.UpiId != null)
+            u.UpiId = string.IsNullOrWhiteSpace(dto.UpiId) ? null : dto.UpiId.Trim();
 
         await _db.SaveChangesAsync();
         return Ok(new { message = "Profile updated" });

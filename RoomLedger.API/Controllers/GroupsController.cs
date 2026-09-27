@@ -7,6 +7,8 @@ using RoomLedger.Application.DTOs;
 using RoomLedger.Domain.Common;
 using RoomLedger.Domain.Entities;
 
+using RoomLedger.Application.Services;
+
 namespace RoomLedger.API.Controllers;
 
 [ApiController]
@@ -15,16 +17,28 @@ namespace RoomLedger.API.Controllers;
 public class GroupsController : ControllerBase
 {
     private readonly IApplicationDbContext _db;
-    public GroupsController(IApplicationDbContext db) => _db = db;
+    private readonly IouService _iou;
+
+    public GroupsController(IApplicationDbContext db, IouService iou)
+    {
+        _db = db;
+        _iou = iou;
+    }
 
     private int Me => int.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
 
     [HttpGet("my")]
-    public async Task<IActionResult> My()
+    public async Task<IActionResult> My([FromQuery] bool includeInactive = false)
     {
         var myGroupIds = await _db.GroupMembers.Where(gm => gm.UserId == Me && gm.Status == MemberStatus.Active).Select(gm => gm.GroupId).ToListAsync();
 
-        var groups = await _db.Groups.Where(g => myGroupIds.Contains(g.Id))
+        var query = _db.Groups.Where(g => myGroupIds.Contains(g.Id));
+        if (!includeInactive)
+        {
+            query = query.Where(g => g.IsActive);
+        }
+
+        var groups = await query
             .Select(g => new
             {
                 id = g.Id,
@@ -32,6 +46,8 @@ public class GroupsController : ControllerBase
                 address = g.Address,
                 monthlyPoolTarget = g.MonthlyPoolTarget,
                 inviteCode = g.InviteCode,
+                isActive = g.IsActive,
+                inactivatedAt = g.InactivatedAt,
                 memberCount = _db.GroupMembers.Count(m => m.GroupId == g.Id && m.Status == MemberStatus.Active),
                 myRole = _db.GroupMembers.Where(m => m.GroupId == g.Id && m.UserId == Me).Select(m => m.Role.ToString()).FirstOrDefault()
             }).ToListAsync();
@@ -63,6 +79,7 @@ public class GroupsController : ControllerBase
                 userId = m.UserId,
                 fullName = m.AliasName ?? u?.FullName ?? $"Member #{m.UserId}",
                 avatarUrl = u?.AvatarUrl,
+                upiId = u?.UpiId,
                 role = m.Role.ToString(),
                 status = m.Status.ToString()
             };
@@ -75,6 +92,8 @@ public class GroupsController : ControllerBase
             address = g.Address,
             monthlyPoolTarget = g.MonthlyPoolTarget,
             inviteCode = g.InviteCode,
+            isActive = g.IsActive,
+            inactivatedAt = g.InactivatedAt,
             memberCount = memberCount,
             myRole = myMembership?.Role.ToString(),
             members = members
@@ -127,6 +146,163 @@ public class GroupsController : ControllerBase
         m.Role = (MemberRole)role;
         await _db.SaveChangesAsync();
         return Ok(new { message = "Role updated" });
+    }
+
+    [HttpDelete("{groupId:int}/members/{memberUserId:int}")]
+    [HttpPost("{groupId:int}/members/{memberUserId:int}/remove")]
+    public async Task<IActionResult> RemoveMember(int groupId, int memberUserId)
+    {
+        // 1. Caller must be an active admin in this group
+        var callerMembership = await _db.GroupMembers.FirstOrDefaultAsync(m =>
+            m.GroupId == groupId && m.UserId == Me && m.Role == MemberRole.Admin && m.Status == MemberStatus.Active);
+        if (callerMembership == null)
+            return Forbid();
+
+        // 2. Admin cannot remove themselves
+        if (memberUserId == Me)
+            return BadRequest(new { message = "You cannot remove yourself as admin. Another admin must perform this, or transfer admin privileges first." });
+
+        // 3. Target must be an active member of this group
+        var targetMember = await _db.GroupMembers.FirstOrDefaultAsync(m =>
+            m.GroupId == groupId && m.UserId == memberUserId && m.Status == MemberStatus.Active);
+        if (targetMember == null)
+            return NotFound(new { message = "Member not found or already inactive in this group." });
+
+        // 4. Financial Safety Check 1: Outstanding IOUs
+        var debts = await _iou.GetDebtMatrixAsync(groupId);
+        var owes = debts.Where(d => d.DebtorId == memberUserId && d.Amount > 0.01m).Sum(d => d.Amount);
+        var owed = debts.Where(d => d.CreditorId == memberUserId && d.Amount > 0.01m).Sum(d => d.Amount);
+        if (owes > 0 || owed > 0)
+        {
+            var msg = owes > 0 && owed > 0
+                ? $"Cannot remove member: User owes ₹{owes:F2} and is owed ₹{owed:F2} in group IOUs. Settle all debts first."
+                : owes > 0
+                    ? $"Cannot remove member: User owes ₹{owes:F2} to other flatmates in group IOUs. Settle before removing."
+                    : $"Cannot remove member: Flatmates owe this user ₹{owed:F2} in group IOUs. Settle before removing.";
+            return BadRequest(new { message = msg });
+        }
+
+        // 5. Financial Safety Check 2: Unpaid Recurring Bills
+        var unpaidBillsCount = await _db.BillSplits.CountAsync(s => s.GroupId == groupId && s.UserId == memberUserId && !s.IsPaid);
+        if (unpaidBillsCount > 0)
+        {
+            return BadRequest(new { message = $"Cannot remove member: User has {unpaidBillsCount} unpaid recurring bill split(s) in this group. Mark them paid or resolve them first." });
+        }
+
+        // 6. Financial Safety Check 3: Unreimbursed Pool Expenses
+        var unreimbursedExpenses = await _db.PoolExpenses.CountAsync(e => e.GroupId == groupId && e.PaidByUserId == memberUserId && !e.IsReimbursed && !e.IsVoided);
+        if (unreimbursedExpenses > 0)
+        {
+            return BadRequest(new { message = $"Cannot remove member: User has {unreimbursedExpenses} unreimbursed out-of-pocket pool expense(s). Please reimburse from pool first." });
+        }
+
+        // Safe to remove
+        targetMember.Status = MemberStatus.Removed;
+
+        var grp = await _db.Groups.FindAsync(groupId);
+        var targetUser = await _db.Users.FindAsync(memberUserId);
+
+        _db.Notifications.Add(new Notification
+        {
+            UserId = memberUserId,
+            Title = "Removed from Flat",
+            Message = $"You have been removed from {grp?.GroupName ?? "the group"} by the administrator.",
+            Type = "group_removed",
+            CreatedAt = DateTime.UtcNow
+        });
+
+        await _db.SaveChangesAsync();
+
+        return Ok(new { message = $"{targetUser?.FullName ?? "Member"} has been safely removed from the group." });
+    }
+
+    [HttpPost("{id:int}/inactivate")]
+    public async Task<IActionResult> InactivateGroup(int id)
+    {
+        // 1. Caller must be an active admin in this group
+        var callerMembership = await _db.GroupMembers.FirstOrDefaultAsync(m =>
+            m.GroupId == id && m.UserId == Me && m.Role == MemberRole.Admin && m.Status == MemberStatus.Active);
+        if (callerMembership == null)
+            return Forbid();
+
+        var g = await _db.Groups.FindAsync(id);
+        if (g == null) return NotFound(new { message = "Flat not found" });
+
+        if (!g.IsActive)
+            return BadRequest(new { message = "This flat is already inactive / archived." });
+
+        // 2. Financial Safety Check 1: Settle all IOUs
+        var debts = await _iou.GetDebtMatrixAsync(id);
+        var outstandingDebts = debts.Where(d => d.Amount > 0.01m).ToList();
+        if (outstandingDebts.Count > 0)
+        {
+            var totalOwed = outstandingDebts.Sum(d => d.Amount);
+            return BadRequest(new { message = $"Cannot inactivate flat: There are {outstandingDebts.Count} unsettled IOUs totaling ₹{totalOwed:F2} between roommates. Settle all debts before closing the flat." });
+        }
+
+        // 3. Financial Safety Check 2: Unpaid Recurring Bills
+        var unpaidBillsCount = await _db.BillSplits.CountAsync(s => s.GroupId == id && !s.IsPaid);
+        if (unpaidBillsCount > 0)
+        {
+            return BadRequest(new { message = $"Cannot inactivate flat: There are {unpaidBillsCount} unpaid recurring bill split(s) in this group. Mark them paid or resolve them first." });
+        }
+
+        // 4. Financial Safety Check 3: Unreimbursed Pool Expenses
+        var unreimbursedExpenses = await _db.PoolExpenses.CountAsync(e => e.GroupId == id && !e.IsReimbursed && !e.IsVoided);
+        if (unreimbursedExpenses > 0)
+        {
+            return BadRequest(new { message = $"Cannot inactivate flat: There are {unreimbursedExpenses} unreimbursed out-of-pocket pool expense(s). Please reimburse them from pool first." });
+        }
+
+        // Safe to inactivate
+        g.IsActive = false;
+        g.InactivatedAt = DateTime.UtcNow;
+        g.InactivatedByUserId = Me;
+
+        // Broadcast notifications to all active members of the flat
+        var activeMemberUserIds = await _db.GroupMembers
+            .Where(m => m.GroupId == id && m.Status == MemberStatus.Active && !(m.IsAlias ?? false) && m.UserId > 0)
+            .Select(m => m.UserId)
+            .ToListAsync();
+
+        foreach (var uid in activeMemberUserIds)
+        {
+            _db.Notifications.Add(new Notification
+            {
+                UserId = uid,
+                Title = "Flat Inactivated",
+                Message = $"Flat '{g.GroupName}' has been deactivated and archived by the administrator.",
+                Type = "group_inactivated",
+                CreatedAt = DateTime.UtcNow
+            });
+        }
+
+        await _db.SaveChangesAsync();
+
+        return Ok(new { message = $"Flat '{g.GroupName}' has been successfully deactivated and archived." });
+    }
+
+    [HttpPost("{id:int}/reactivate")]
+    public async Task<IActionResult> ReactivateGroup(int id)
+    {
+        var callerMembership = await _db.GroupMembers.FirstOrDefaultAsync(m =>
+            m.GroupId == id && m.UserId == Me && m.Role == MemberRole.Admin);
+        if (callerMembership == null)
+            return Forbid();
+
+        var g = await _db.Groups.FindAsync(id);
+        if (g == null) return NotFound(new { message = "Flat not found" });
+
+        if (g.IsActive)
+            return BadRequest(new { message = "This flat is already active." });
+
+        g.IsActive = true;
+        g.InactivatedAt = null;
+        g.InactivatedByUserId = null;
+
+        await _db.SaveChangesAsync();
+
+        return Ok(new { message = $"Flat '{g.GroupName}' has been successfully reactivated." });
     }
 
     private async Task<string> GenerateUniqueInviteCodeAsync(string groupName)

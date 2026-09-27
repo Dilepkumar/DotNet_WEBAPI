@@ -26,5 +26,6 @@ public interface IApplicationDbContext
     public DbSet<IouItemAssignment> IouItemAssignments { get; }
     public DbSet<Notification> Notifications { get; }
     DbSet<EmailTemplate> EmailTemplates { get; }
+    DbSet<UserPushSubscription> UserPushSubscriptions { get; }
     Task<int> SaveChangesAsync(CancellationToken ct = default);
 }

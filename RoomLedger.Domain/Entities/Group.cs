@@ -7,5 +7,8 @@ public class Group : BaseEntity
     public string? InviteCode { get; set; }
     public string? Address { get; set; }
     public decimal MonthlyPoolTarget { get; set; }
+    public bool IsActive { get; set; } = true;
+    public DateTime? InactivatedAt { get; set; }
+    public int? InactivatedByUserId { get; set; }
     public ICollection<GroupMember> Members { get; set; } = new List<GroupMember>();
 }

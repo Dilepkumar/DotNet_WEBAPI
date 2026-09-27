@@ -29,6 +29,13 @@ public static class DependencyInjection
         services.Configure<CloudinarySettings>(config.GetSection("Cloudinary"));
         services.AddScoped<ICloudStorageService, CloudinaryStorageService>();
 
+        // Web Push Notifications
+        services.Configure<WebPushSettings>(config.GetSection("WebPush"));
+        services.AddScoped<IPushNotificationService, WebPushNotificationService>();
+
+        // Automated Maintenance Background Jobs
+        services.AddHostedService<DatabaseCleanupBackgroundService>();
+
         return services;
     }
 }

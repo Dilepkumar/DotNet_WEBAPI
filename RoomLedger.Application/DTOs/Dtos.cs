@@ -42,7 +42,14 @@ public record DebtPairDto(int DebtorId, int CreditorId, decimal Amount);
 public record GenerateSplitsDto(string BillingMonth);
 public record VoidDto(string Reason);
 public record EditIouDto(string Description, decimal Amount, string? Reason);
-public record EditPoolExpenseDto(string Description, List<PoolItemDto> Items, string? Reason);
+public record EditPoolExpenseDto(
+    string Description,
+    decimal? Amount = null,
+    string? ExpenseDate = null,
+    string? Category = null,
+    List<PoolItemDto>? Items = null,
+    string? ReceiptUrl = null,
+    string? Reason = null);
 public record IouParticipantDto(int UserId, decimal? ShareAmount);   // null = equal share
 public record IouExpenseDto(string Description, decimal Amount, List<IouParticipantDto> Participants, string? ExpenseDate);
 public record FlexibleIouExpenseDto(string Description, decimal Amount, List<IouParticipantDto>? Participants, List<string>? SharedWith, string? ExpenseDate);
@@ -156,8 +163,10 @@ public record UpdateProfileDto(
     [Required, MinLength(2)] string FullName,
     DateTime? DateOfBirth,
     string? Gender,
-    string? Phone = null);
+    string? Phone = null,
+    string? UpiId = null);
 public record ChangePasswordDto(
     [Required] string CurrentPassword,
     [Required, MinLength(8)] string NewPassword);
-
+public record PushSubscriptionDto(string Endpoint, PushKeysDto Keys);
+public record PushKeysDto(string P256dh, string Auth);

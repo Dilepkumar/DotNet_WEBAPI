@@ -4,11 +4,14 @@ using Microsoft.AspNetCore.Mvc;
 using RoomLedger.Application.DTOs;
 using RoomLedger.Application.Services;
 
+using RoomLedger.API.Infrastructure.Filters;
+
 namespace RoomLedger.API.Controllers;
 
 [ApiController]
 [Route("api/groups/{groupId:int}/iou")]
 [Authorize]
+[RequireGroupMember]
 public class IouController : ControllerBase
 {
     private readonly IouService _iou;

@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
 using RoomLedger.Application.Common.Interfaces;
 using RoomLedger.Application.DTOs;
 using RoomLedger.Domain.Entities;
@@ -9,14 +9,33 @@ public class NotificationService
 {
     private readonly IApplicationDbContext _db;
     private readonly ICurrentUserService _me;
-    public NotificationService(IApplicationDbContext db, ICurrentUserService me)
-    { _db = db; _me = me; }
+    private readonly IPushNotificationService _push;
+
+    public NotificationService(
+        IApplicationDbContext db, 
+        ICurrentUserService me,
+        IPushNotificationService push)
+    { 
+        _db = db; 
+        _me = me;
+        _push = push;
+    }
 
     public async Task PushAsync(int userId, int? groupId, string title, string message, string type)
     {
         _db.Notifications.Add(new Notification
         { UserId = userId, GroupId = groupId, Title = title, Message = message, Type = type });
         await _db.SaveChangesAsync();
+
+        try
+        {
+            var targetUrl = groupId.HasValue ? $"/g/{groupId.Value}/dashboard" : "/notifications";
+            await _push.SendPushNotificationAsync(userId, title, message, targetUrl);
+        }
+        catch
+        {
+            // Web push failure should never abort the in-app notification flow
+        }
     }
 
     public async Task<List<NotificationDto>> GetMineAsync()
