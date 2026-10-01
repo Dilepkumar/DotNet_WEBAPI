@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using RoomLedger.Application.Services;
 
@@ -15,8 +15,8 @@ public class DashboardController : ControllerBase
     { _dashboard = dashboard; _notifications = notifications; }
 
     [HttpGet]
-    public async Task<IActionResult> Get(int groupId)
-        => Ok(await _dashboard.GetAsync(groupId));
+    public async Task<IActionResult> Get(int groupId, [FromQuery] string? month = null)
+        => Ok(await _dashboard.GetAsync(groupId, month));
 
     [HttpGet("notifications")]       // GET api/groups/{id}/dashboard/notifications
     public async Task<IActionResult> Notifications()

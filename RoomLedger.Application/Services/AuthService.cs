@@ -145,13 +145,15 @@ public class AuthService
     public async Task<(bool ok, string message, object? result)> LoginAsync(LoginDto dto)
     {
         var id = dto.Identifier.Trim().ToLower();
+        var bareId = id.StartsWith("+91") ? id[3..] : id;
+        var withPrefix = "+91" + bareId;
 
-        // match by email OR phone (handles +91 / bare 10-digit)
+        // Sargable index-friendly search: matches email OR phone (+91 or 10-digit) without SQL column functions
         var user = await _db.Users.FirstOrDefaultAsync(u =>
             u.Email == id ||
             u.Phone == id ||
-            u.Phone == "+91" + id ||
-            u.Phone!.Replace("+91", "") == id);
+            u.Phone == bareId ||
+            u.Phone == withPrefix);
 
         if (user == null || !_hasher.Verify(dto.Password, user.PasswordHash))
             return (false, "Invalid email/phone or password", null);

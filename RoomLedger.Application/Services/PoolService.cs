@@ -519,27 +519,111 @@ public class PoolService
 
 
     // PoolService — GetPoolBalanceAsync:
-    public async Task<object> GetPoolBalanceAsync(int groupId, int userId)
+    public async Task<object> GetPoolBalanceAsync(int groupId, int userId, string? month = null)
     {
         var target = await _db.Groups
             .Where(g => g.Id == groupId)
             .Select(g => (decimal?)g.MonthlyPoolTarget ?? 0m)
             .FirstOrDefaultAsync();
 
-        var contributed = await _db.PoolContributions
+        // 1. ALL-TIME CASH IN HAND (Live Physical Pool Wallet Balance)
+        var totalContributionsAllTime = await _db.PoolContributions
             .Where(c => c.GroupId == groupId && c.Status == ContributionStatus.Approved)
             .SumAsync(c => (decimal?)c.Amount) ?? 0m;
 
         // Money actually withdrawn from pool: direct pool payments + reimbursed out-of-pocket expenses
-        var spent = await _db.PoolExpenses
+        var totalSpentAllTime = await _db.PoolExpenses
             .Where(e => e.GroupId == groupId && !e.IsVoided && (!e.PaidByUserId.HasValue || e.IsReimbursed))
             .SumAsync(e => (decimal?)e.TotalAmount) ?? 0m;
+
+        var currentBalance = totalContributionsAllTime - totalSpentAllTime;
 
         var pendingReimbursementsTotal = await _db.PoolExpenses
             .Where(e => e.GroupId == groupId && !e.IsVoided && e.PaidByUserId.HasValue && !e.IsReimbursed)
             .SumAsync(e => (decimal?)e.TotalAmount) ?? 0m;
 
-        var currentMonth = DateTime.UtcNow.ToString("yyyy-MM");
+        // 2. PARSE SELECTED MONTH & CARRYOVER OPENING BALANCE
+        var nowMonthStr = DateTime.UtcNow.ToString("yyyy-MM");
+        var selectedMonth = !string.IsNullOrWhiteSpace(month) ? month.Trim() : nowMonthStr;
+        bool isAllTime = selectedMonth.Equals("all", StringComparison.OrdinalIgnoreCase);
+
+        DateOnly? startOfMonth = null;
+        DateOnly? endOfMonth = null;
+
+        if (!isAllTime && DateOnly.TryParseExact(selectedMonth + "-01", "yyyy-MM-dd", out var parsedDate))
+        {
+            startOfMonth = parsedDate;
+            endOfMonth = startOfMonth.Value.AddMonths(1).AddDays(-1);
+        }
+        else if (!isAllTime)
+        {
+            selectedMonth = nowMonthStr;
+            startOfMonth = new DateOnly(DateTime.UtcNow.Year, DateTime.UtcNow.Month, 1);
+            endOfMonth = startOfMonth.Value.AddMonths(1).AddDays(-1);
+        }
+
+        // Opening carryover balance entering this month (contributions before this month minus expenses before this month)
+        decimal openingCarryover = 0m;
+        if (startOfMonth.HasValue)
+        {
+            var contribsBefore = await _db.PoolContributions
+                .Where(c => c.GroupId == groupId && c.Status == ContributionStatus.Approved && c.ContributedOn < startOfMonth.Value)
+                .SumAsync(c => (decimal?)c.Amount) ?? 0m;
+
+            var spentBefore = await _db.PoolExpenses
+                .Where(e => e.GroupId == groupId && !e.IsVoided && (!e.PaidByUserId.HasValue || e.IsReimbursed) && e.ExpenseDate < startOfMonth.Value)
+                .SumAsync(e => (decimal?)e.TotalAmount) ?? 0m;
+
+            openingCarryover = contribsBefore - spentBefore;
+        }
+
+        // Month-specific contributions & expenses
+        decimal monthContributions;
+        decimal monthSpent;
+
+        if (startOfMonth.HasValue && endOfMonth.HasValue)
+        {
+            monthContributions = await _db.PoolContributions
+                .Where(c => c.GroupId == groupId && c.Status == ContributionStatus.Approved && c.PeriodMonth == selectedMonth)
+                .SumAsync(c => (decimal?)c.Amount) ?? 0m;
+
+            monthSpent = await _db.PoolExpenses
+                .Where(e => e.GroupId == groupId && !e.IsVoided && (!e.PaidByUserId.HasValue || e.IsReimbursed)
+                            && e.ExpenseDate >= startOfMonth.Value && e.ExpenseDate <= endOfMonth.Value)
+                .SumAsync(e => (decimal?)e.TotalAmount) ?? 0m;
+        }
+        else
+        {
+            monthContributions = totalContributionsAllTime;
+            monthSpent = totalSpentAllTime;
+        }
+
+        var monthlyBudgetRemaining = Math.Max(0, target - monthSpent);
+        var monthlySpentPercentage = target > 0 ? Math.Round((monthSpent / target) * 100, 1) : 0m;
+        var monthlyCollectedPercentage = target > 0 ? Math.Round((monthContributions / target) * 100, 1) : 0m;
+
+        // Distinct available months for filtering
+        var contribMonths = await _db.PoolContributions
+            .Where(c => c.GroupId == groupId && !string.IsNullOrWhiteSpace(c.PeriodMonth))
+            .Select(c => c.PeriodMonth)
+            .Distinct()
+            .ToListAsync();
+
+        var allExpenseDates = await _db.PoolExpenses
+            .Where(e => e.GroupId == groupId && !e.IsVoided)
+            .Select(e => e.ExpenseDate)
+            .ToListAsync();
+
+        var expenseMonths = allExpenseDates
+            .Select(d => d.ToString("yyyy-MM"))
+            .Distinct()
+            .ToList();
+
+        var availableMonths = contribMonths.Concat(expenseMonths)
+            .Append(nowMonthStr)
+            .Distinct()
+            .OrderByDescending(m => m)
+            .ToList();
 
         // Members: no User nav on GroupMember → project id + share, join names via _db.Users
         var members = await _db.GroupMembers
@@ -560,10 +644,16 @@ public class PoolService
 
         var memberIds = members.Select(m => m.UserId).ToList();
 
-        // This month's contributions per member (one grouped query)
-        var monthSums = await _db.PoolContributions
-            .Where(c => c.GroupId == groupId && c.PeriodMonth == currentMonth
-             && c.Status == ContributionStatus.Approved)
+        // Selected month's contributions per member
+        var monthSumsQuery = _db.PoolContributions
+            .Where(c => c.GroupId == groupId && c.Status == ContributionStatus.Approved);
+
+        if (!isAllTime)
+        {
+            monthSumsQuery = monthSumsQuery.Where(c => c.PeriodMonth == selectedMonth);
+        }
+
+        var monthSums = await monthSumsQuery
             .GroupBy(c => c.UserId)
             .Select(g => new { UserId = g.Key, Total = g.Sum(x => x.Amount) })
             .ToDictionaryAsync(x => x.UserId, x => x.Total);
@@ -711,9 +801,14 @@ public class PoolService
         }))
         .OrderByDescending(t => t.date).Take(20).ToList();
 
-        // Dynamic Category Breakdown & Out-of-Pocket Reimbursements
-        var allExpenses = await _db.PoolExpenses
-            .Where(e => e.GroupId == groupId && !e.IsVoided)
+        // Dynamic Category Breakdown & Out-of-Pocket Reimbursements (scoped to selected month)
+        var expenseQuery = _db.PoolExpenses.Where(e => e.GroupId == groupId && !e.IsVoided);
+        if (startOfMonth.HasValue && endOfMonth.HasValue)
+        {
+            expenseQuery = expenseQuery.Where(e => e.ExpenseDate >= startOfMonth.Value && e.ExpenseDate <= endOfMonth.Value);
+        }
+
+        var allExpenses = await expenseQuery
             .Select(e => new
             {
                 e.Id,
@@ -849,20 +944,37 @@ public class PoolService
             percentage = maxMonth > 0 ? Math.Round((double)(m.total / maxMonth) * 100, 1) : 0
         }).ToList();
 
-        var balance = contributed - spent;
         var lowThreshold = target > 0 ? (target * 0.20m) : 500m;
-        var isLowBalance = balance <= lowThreshold;
+        var isLowBalance = currentBalance <= lowThreshold;
 
         return new
         {
             isAdmin,
             pendingItems,
-            currentBalance = balance,
+            selectedMonth,
+            availableMonths,
+            isCurrentMonth = selectedMonth == nowMonthStr,
+
+            // Live Physical Cash in Hand (Never resets on 1st of month)
+            currentBalance,
+            openingCarryover,
+            totalContributionsAllTime,
+            totalSpentAllTime,
+
+            // Selected Month Budget & Spending (Scenario 2: Fixed Monthly Cycle)
             monthlyTarget = target,
+            monthContributions,
+            monthSpent,
+            monthlyBudgetRemaining,
+            monthlySpentPercentage,
+            monthlyCollectedPercentage,
+
+            // Compatibility properties
+            totalContributions = totalContributionsAllTime,
+            totalSpent = totalSpentAllTime,
+
             isLowBalance,
             lowThreshold,
-            totalContributions = contributed,
-            totalSpent = spent,
             pendingReimbursementsTotal,
             memberStatuses,
             categoryBreakdown,

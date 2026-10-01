@@ -20,8 +20,8 @@ public class PoolController : ControllerBase
     private int Me => int.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
 
     [HttpGet("balance")]
-    public async Task<IActionResult> Balance(int groupId)
-    => Ok(await _pool.GetPoolBalanceAsync(groupId, Me));
+    public async Task<IActionResult> Balance(int groupId, [FromQuery] string? month = null)
+    => Ok(await _pool.GetPoolBalanceAsync(groupId, Me, month));
 
     [HttpPost("contribute")]
     public async Task<IActionResult> Contribute(int groupId, ContributeDto dto)

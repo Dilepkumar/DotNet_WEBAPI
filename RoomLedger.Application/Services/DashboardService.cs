@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using RoomLedger.Application.Common.Interfaces;
 using RoomLedger.Application.DTOs;
 using RoomLedger.Domain.Common;
+using RoomLedger.Domain.Entities;
 
 namespace RoomLedger.Application.Services;
 
@@ -18,7 +19,7 @@ public class DashboardService
         _iou = iou;
     }
 
-    public async Task<DashboardDto> GetAsync(int groupId)
+    public async Task<DashboardDto> GetAsync(int groupId, string? month = null)
     {
         var uid = _me.UserId;
         var now = DateTime.UtcNow;
@@ -36,210 +37,122 @@ public class DashboardService
             .Where(c => c.GroupId == groupId && c.Status == ContributionStatus.Approved)
             .SumAsync(c => (decimal?)c.Amount) ?? 0m;
 
-        var spent = await _db.PoolExpenses
+        var allExpenses = await _db.PoolExpenses
+            .Include(e => e.Items)
+                .ThenInclude(i => i.ExpenseCategory)
             .Where(e => e.GroupId == groupId && !e.IsVoided)
-            .SumAsync(e => (decimal?)e.TotalAmount) ?? 0m;
+            .OrderByDescending(e => e.ExpenseDate)
+            .ToListAsync();
 
+        var spent = allExpenses.Sum(e => e.TotalAmount);
         var poolBalance = Math.Max(0, contributed - spent);
 
-        var poolSpentThisMonth = await _db.PoolExpenses
-            .Where(e => e.GroupId == groupId && !e.IsVoided && e.ExpenseDate.Year == now.Year && e.ExpenseDate.Month == now.Month)
-            .SumAsync(e => (decimal?)e.TotalAmount) ?? 0m;
+        var poolSpentThisMonth = allExpenses
+            .Where(e => e.ExpenseDate.Year == now.Year && e.ExpenseDate.Month == now.Month)
+            .Sum(e => e.TotalAmount);
 
         double poolRemainingPct = monthlyPoolTarget > 0
             ? Math.Max(0, Math.Min(100, Math.Round((double)(poolBalance / monthlyPoolTarget) * 100, 1))) : 100.0;
 
-        // 3. Category Expense Breakdown
-        var items = await _db.ExpenseItems
-            .Include(i => i.ExpenseCategory)
-            .Include(i => i.PoolExpense)
-            .Where(i => i.PoolExpense != null && i.PoolExpense.GroupId == groupId && !i.PoolExpense.IsVoided)
-            .ToListAsync();
+        // 3. Category & Item Breakdowns (Current Month vs All-Time vs Monthwise)
+        var currentMonthExpenses = allExpenses
+            .Where(e => e.ExpenseDate.Year == now.Year && e.ExpenseDate.Month == now.Month)
+            .ToList();
 
-        var categoryGroups = items
-            .GroupBy(i =>
+        var currentCategories = ExtractCategories(currentMonthExpenses);
+        var currentItems = ExtractItems(currentMonthExpenses, 15);
+
+        var allTimeCategories = ExtractCategories(allExpenses);
+        var allTimeItems = ExtractItems(allExpenses, 15);
+
+        // Select the active breakdown based on optional query parameter
+        List<DashboardCategoryDto> categories;
+        List<DashboardItemBreakdownDto> itemBreakdown;
+
+        if (!string.IsNullOrWhiteSpace(month))
+        {
+            if (month.Equals("all", StringComparison.OrdinalIgnoreCase))
             {
-                var catName = !string.IsNullOrWhiteSpace(i.ExpenseCategory?.Name)
-                    ? i.ExpenseCategory.Name
-                    : (!string.IsNullOrWhiteSpace(i.PoolExpense?.Category) ? i.PoolExpense.Category : "Other");
-                var icon = !string.IsNullOrWhiteSpace(i.ExpenseCategory?.Icon)
-                    ? i.ExpenseCategory.Icon
-                    : PoolService.GetCategoryIcon(catName);
-                return new
-                {
-                    CatId = i.ExpenseCategoryId,
-                    CatName = catName,
-                    Icon = icon
-                };
-            })
-            .Select(g => new
+                categories = allTimeCategories;
+                itemBreakdown = allTimeItems;
+            }
+            else
             {
-                g.Key.CatId,
-                g.Key.CatName,
-                g.Key.Icon,
-                Total = g.Sum(x => x.Amount),
-                Count = g.Count()
-            }).OrderByDescending(x => x.Total).ToList();
+                var specificMonthExpenses = allExpenses
+                    .Where(e => e.ExpenseDate.ToString("yyyy-MM") == month)
+                    .ToList();
+                categories = ExtractCategories(specificMonthExpenses);
+                itemBreakdown = ExtractItems(specificMonthExpenses, 15);
+            }
+        }
+        else
+        {
+            categories = currentCategories;
+            itemBreakdown = currentItems;
+        }
 
-        var totalSpentAll = categoryGroups.Sum(x => x.Total);
-        var categories = categoryGroups.Select(c => new DashboardCategoryDto(
-            c.CatId,
-            c.CatName,
-            c.Icon,
-            c.Total,
-            c.Count,
-            totalSpentAll > 0 ? Math.Round((double)(c.Total / totalSpentAll) * 100, 1) : 0
-        )).ToList();
-
-        // 3b. Item Breakdown
-        var itemGroups = items
-            .GroupBy(i => new
-            {
-                ItemName = i.ItemName.Trim(),
-                CatName = !string.IsNullOrWhiteSpace(i.ExpenseCategory?.Name)
-                    ? i.ExpenseCategory.Name
-                    : (!string.IsNullOrWhiteSpace(i.PoolExpense?.Category) ? i.PoolExpense.Category : "Other")
-            })
-            .Select(g => new
-            {
-                g.Key.ItemName,
-                g.Key.CatName,
-                Total = g.Sum(x => x.Amount),
-                Count = g.Count()
-            }).OrderByDescending(x => x.Total).Take(10).ToList();
-
-        var totalItemSpend = itemGroups.Sum(x => x.Total);
-        var itemBreakdown = itemGroups.Select(it => new DashboardItemBreakdownDto(
-            it.ItemName,
-            it.CatName,
-            it.Total,
-            it.Count,
-            totalItemSpend > 0 ? Math.Round((double)(it.Total / totalItemSpend) * 100, 1) : 0
-        )).ToList();
-
-        // 3c. Monthly Historical Categories & Items (last 6 months)
-        var sixMonthsAgo = DateOnly.FromDateTime(DateTime.UtcNow.AddMonths(-5).Date);
-        sixMonthsAgo = new DateOnly(sixMonthsAgo.Year, sixMonthsAgo.Month, 1);
-
-        var historicalExpenses = await _db.PoolExpenses
-            .Include(e => e.Items)
-            .ThenInclude(i => i.ExpenseCategory)
-            .Where(e => e.GroupId == groupId && !e.IsVoided && e.ExpenseDate >= sixMonthsAgo)
-            .ToListAsync();
-
-        var monthsList = new List<(string Key, string Label)>();
-        var nowUtc = DateTime.UtcNow;
+        // 3c. Monthly Historical Categories & Items (all active months + last 6 months minimum)
+        var monthKeysSet = new SortedSet<string>(allExpenses.Select(e => e.ExpenseDate.ToString("yyyy-MM")));
         for (int m = 5; m >= 0; m--)
         {
-            var dt = nowUtc.AddMonths(-m);
-            monthsList.Add((dt.ToString("yyyy-MM"), dt.ToString("MMM yyyy")));
+            monthKeysSet.Add(now.AddMonths(-m).ToString("yyyy-MM"));
         }
+
+        var monthsList = monthKeysSet.Select(k =>
+        {
+            var parts = k.Split('-');
+            var d = new DateTime(int.Parse(parts[0]), int.Parse(parts[1]), 1);
+            return (Key: k, Label: d.ToString("MMM yyyy"));
+        }).ToList();
 
         var monthlyCategories = new List<DashboardMonthlyCategoryDto>();
         var monthlyItems = new List<DashboardMonthlyItemDto>();
 
-        foreach (var (monthKey, monthLabel) in monthsList)
+        foreach (var (mKey, mLabel) in monthsList)
         {
-            var monthExpenses = historicalExpenses.Where(e => e.ExpenseDate.ToString("yyyy-MM") == monthKey).ToList();
-            var monthTotal = monthExpenses.Sum(e => e.TotalAmount);
+            var mExpenses = allExpenses.Where(e => e.ExpenseDate.ToString("yyyy-MM") == mKey).ToList();
+            var mTotal = mExpenses.Sum(e => e.TotalAmount);
 
-            // Aggregate categories for this month
-            var catMap = new Dictionary<string, (string Icon, decimal Total)>();
-            foreach (var exp in monthExpenses)
-            {
-                if (exp.Items != null && exp.Items.Count > 0)
-                {
-                    foreach (var it in exp.Items)
-                    {
-                        var catName = !string.IsNullOrWhiteSpace(it.ExpenseCategory?.Name)
-                            ? it.ExpenseCategory.Name
-                            : (!string.IsNullOrWhiteSpace(exp.Category) ? exp.Category : "General");
-                        var catIcon = !string.IsNullOrWhiteSpace(it.ExpenseCategory?.Icon)
-                            ? it.ExpenseCategory.Icon
-                            : "📦";
-                        if (!catMap.ContainsKey(catName)) catMap[catName] = (catIcon, 0);
-                        catMap[catName] = (catIcon, catMap[catName].Total + it.Amount);
-                    }
-                }
-                else
-                {
-                    var catName = !string.IsNullOrWhiteSpace(exp.Category) ? exp.Category : "General";
-                    if (!catMap.ContainsKey(catName)) catMap[catName] = ("📦", 0);
-                    catMap[catName] = ("📦", catMap[catName].Total + exp.TotalAmount);
-                }
-            }
-
-            var catSlices = catMap
-                .Select(kv => new DashboardCategorySliceDto(
-                    kv.Key,
-                    kv.Value.Icon,
-                    kv.Value.Total,
-                    monthTotal > 0 ? Math.Round((double)(kv.Value.Total / monthTotal) * 100, 1) : 0
-                ))
-                .OrderByDescending(x => x.TotalAmount)
-                .ToList();
+            var mCats = ExtractCategories(mExpenses).Select(c => new DashboardCategorySliceDto(
+                c.CategoryName,
+                c.Icon ?? PoolService.GetCategoryIcon(c.CategoryName),
+                c.TotalAmount,
+                c.Percentage,
+                c.ItemCount
+            )).ToList();
 
             monthlyCategories.Add(new DashboardMonthlyCategoryDto(
-                monthLabel,
-                monthKey,
-                monthTotal,
-                catSlices
+                mLabel,
+                mKey,
+                mTotal,
+                mCats
             ));
 
-            // Aggregate items for this month
-            var itmMap = new Dictionary<string, (string CatName, decimal Total, decimal Qty, int Count)>();
-            foreach (var exp in monthExpenses)
-            {
-                if (exp.Items != null && exp.Items.Count > 0)
-                {
-                    foreach (var it in exp.Items)
-                    {
-                        var itName = it.ItemName.Trim();
-                        var catName = !string.IsNullOrWhiteSpace(it.ExpenseCategory?.Name)
-                            ? it.ExpenseCategory.Name
-                            : (!string.IsNullOrWhiteSpace(exp.Category) ? exp.Category : "General");
-                        if (!itmMap.ContainsKey(itName)) itmMap[itName] = (catName, 0, 0, 0);
-                        var cur = itmMap[itName];
-                        itmMap[itName] = (catName, cur.Total + it.Amount, cur.Qty + it.Quantity, cur.Count + 1);
-                    }
-                }
-                else
-                {
-                    var itName = exp.Description.Trim();
-                    var catName = !string.IsNullOrWhiteSpace(exp.Category) ? exp.Category : "General";
-                    if (!itmMap.ContainsKey(itName)) itmMap[itName] = (catName, 0, 0, 0);
-                    var cur = itmMap[itName];
-                    itmMap[itName] = (catName, cur.Total + exp.TotalAmount, cur.Qty + 1, cur.Count + 1);
-                }
-            }
-
-            var itmSlices = itmMap
-                .Select(kv => new DashboardItemSliceDto(
-                    kv.Key,
-                    kv.Value.CatName,
-                    kv.Value.Total,
-                    kv.Value.Qty,
-                    kv.Value.Count,
-                    monthTotal > 0 ? Math.Round((double)(kv.Value.Total / monthTotal) * 100, 1) : 0
-                ))
-                .OrderByDescending(x => x.TotalAmount)
-                .Take(12)
-                .ToList();
+            var mItms = ExtractItems(mExpenses, 12).Select(it => new DashboardItemSliceDto(
+                it.ItemName,
+                it.CategoryName,
+                it.TotalAmount,
+                1m,
+                it.Count,
+                it.Percentage
+            )).ToList();
 
             monthlyItems.Add(new DashboardMonthlyItemDto(
-                monthLabel,
-                monthKey,
-                monthTotal,
-                itmSlices
+                mLabel,
+                mKey,
+                mTotal,
+                mItms
             ));
         }
 
         var maxMonthTotal = monthlyCategories.Any() ? monthlyCategories.Max(m => m.TotalAmount) : 0m;
-        var monthlyTrends = monthlyCategories.Select(m => new MonthlyTrendDto(
+        var monthlyTrends = monthlyCategories.TakeLast(6).Select(m => new MonthlyTrendDto(
             m.Month,
             m.TotalAmount,
             maxMonthTotal > 0 ? Math.Round((double)(m.TotalAmount / maxMonthTotal) * 100, 1) : 0
         )).ToList();
+
+        var availableMonths = monthsList.Select(m => m.Key).OrderByDescending(k => k).ToList();
 
         // 4. Recent Pool Expenses with full timestamp, item details, and recorder name
         var recentExpensesEntities = await _db.PoolExpenses
@@ -351,7 +264,122 @@ public class DashboardService
             RecentExpenses: recentExpenses,
             IouDebts: iouDebts,
             MonthlyCategories: monthlyCategories,
-            MonthlyItems: monthlyItems
+            MonthlyItems: monthlyItems,
+            AllTimeCategories: allTimeCategories,
+            AllTimeItems: allTimeItems,
+            AllTimePoolSpent: spent,
+            AvailableMonths: availableMonths
         );
+    }
+
+    private static List<DashboardCategoryDto> ExtractCategories(IEnumerable<PoolExpense> expenses)
+    {
+        var categoryMap = new Dictionary<string, (int? CatId, string CatName, string Icon, decimal Total, int Count)>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var exp in expenses)
+        {
+            if (exp.Items != null && exp.Items.Count > 0)
+            {
+                foreach (var item in exp.Items)
+                {
+                    var catName = !string.IsNullOrWhiteSpace(item.ExpenseCategory?.Name)
+                        ? item.ExpenseCategory.Name.Trim()
+                        : (!string.IsNullOrWhiteSpace(exp.Category) ? exp.Category.Trim() : "Other");
+                    var catIcon = !string.IsNullOrWhiteSpace(item.ExpenseCategory?.Icon)
+                        ? item.ExpenseCategory.Icon
+                        : PoolService.GetCategoryIcon(catName);
+                    var catId = item.ExpenseCategoryId;
+
+                    if (!categoryMap.TryGetValue(catName, out var cur))
+                    {
+                        categoryMap[catName] = (catId, catName, catIcon, item.Amount, 1);
+                    }
+                    else
+                    {
+                        categoryMap[catName] = (cur.CatId ?? catId, catName, cur.Icon, cur.Total + item.Amount, cur.Count + 1);
+                    }
+                }
+            }
+            else
+            {
+                var catName = !string.IsNullOrWhiteSpace(exp.Category) ? exp.Category.Trim() : "Other";
+                var catIcon = PoolService.GetCategoryIcon(catName);
+
+                if (!categoryMap.TryGetValue(catName, out var cur))
+                {
+                    categoryMap[catName] = (null, catName, catIcon, exp.TotalAmount, 1);
+                }
+                else
+                {
+                    categoryMap[catName] = (cur.CatId, catName, cur.Icon, cur.Total + exp.TotalAmount, cur.Count + 1);
+                }
+            }
+        }
+
+        var totalSpent = categoryMap.Values.Sum(c => c.Total);
+        return categoryMap.Values
+            .OrderByDescending(c => c.Total)
+            .Select(c => new DashboardCategoryDto(
+                c.CatId,
+                c.CatName,
+                c.Icon,
+                c.Total,
+                c.Count,
+                totalSpent > 0 ? Math.Round((double)(c.Total / totalSpent) * 100, 1) : 0
+            )).ToList();
+    }
+
+    private static List<DashboardItemBreakdownDto> ExtractItems(IEnumerable<PoolExpense> expenses, int take = 15)
+    {
+        var itemMap = new Dictionary<string, (string ItemName, string CatName, decimal Total, int Count)>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var exp in expenses)
+        {
+            if (exp.Items != null && exp.Items.Count > 0)
+            {
+                foreach (var item in exp.Items)
+                {
+                    var itemName = !string.IsNullOrWhiteSpace(item.ItemName) ? item.ItemName.Trim() : exp.Description.Trim();
+                    var catName = !string.IsNullOrWhiteSpace(item.ExpenseCategory?.Name)
+                        ? item.ExpenseCategory.Name.Trim()
+                        : (!string.IsNullOrWhiteSpace(exp.Category) ? exp.Category.Trim() : "Other");
+
+                    if (!itemMap.TryGetValue(itemName, out var cur))
+                    {
+                        itemMap[itemName] = (itemName, catName, item.Amount, 1);
+                    }
+                    else
+                    {
+                        itemMap[itemName] = (itemName, cur.CatName, cur.Total + item.Amount, cur.Count + 1);
+                    }
+                }
+            }
+            else
+            {
+                var itemName = !string.IsNullOrWhiteSpace(exp.Description) ? exp.Description.Trim() : "General Expense";
+                var catName = !string.IsNullOrWhiteSpace(exp.Category) ? exp.Category.Trim() : "Other";
+
+                if (!itemMap.TryGetValue(itemName, out var cur))
+                {
+                    itemMap[itemName] = (itemName, catName, exp.TotalAmount, 1);
+                }
+                else
+                {
+                    itemMap[itemName] = (itemName, cur.CatName, cur.Total + exp.TotalAmount, cur.Count + 1);
+                }
+            }
+        }
+
+        var totalItemSpend = itemMap.Values.Sum(i => i.Total);
+        return itemMap.Values
+            .OrderByDescending(i => i.Total)
+            .Take(take)
+            .Select(it => new DashboardItemBreakdownDto(
+                it.ItemName,
+                it.CatName,
+                it.Total,
+                it.Count,
+                totalItemSpend > 0 ? Math.Round((double)(it.Total / totalItemSpend) * 100, 1) : 0
+            )).ToList();
     }
 }

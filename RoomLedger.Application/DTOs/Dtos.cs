@@ -102,7 +102,8 @@ public record DashboardCategorySliceDto(
     string CategoryName,
     string Icon,
     decimal TotalAmount,
-    double Percentage);
+    double Percentage,
+    int ItemCount = 0);
 
 public record DashboardMonthlyCategoryDto(
     string Month,
@@ -144,7 +145,11 @@ public record DashboardDto(
     List<DashboardExpenseDto> RecentExpenses,
     List<DashboardIouDebtDto> IouDebts,
     List<DashboardMonthlyCategoryDto>? MonthlyCategories = null,
-    List<DashboardMonthlyItemDto>? MonthlyItems = null);
+    List<DashboardMonthlyItemDto>? MonthlyItems = null,
+    List<DashboardCategoryDto>? AllTimeCategories = null,
+    List<DashboardItemBreakdownDto>? AllTimeItems = null,
+    decimal AllTimePoolSpent = 0m,
+    List<string>? AvailableMonths = null);
 
 public record UpcomingBillDto(string BillName, decimal ShareAmount, int DueDay, bool IsPaid);
 public record NotificationDto(int Id, string Title, string Message, string Type, bool IsRead, DateTime CreatedAt);
