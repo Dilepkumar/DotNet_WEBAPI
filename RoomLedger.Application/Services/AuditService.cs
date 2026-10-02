@@ -1,4 +1,4 @@
-﻿using System.Text.Json;
+using System.Text.Json;
 using RoomLedger.Application.Common.Interfaces;
 using RoomLedger.Domain.Entities;
 
@@ -11,11 +11,14 @@ public class AuditService : IAuditService
 
     public async Task LogAsync(string entityName, int entityId, string action, object? oldValue, object? newValue, int modifiedBy, string? reason)
     {
+        var safeAction = action?.Length > 20 ? action[..20] : (action ?? string.Empty);
+        var safeEntityName = entityName?.Length > 50 ? entityName[..50] : (entityName ?? string.Empty);
+
         _db.AuditLogs.Add(new AuditLog
         {
-            EntityName = entityName,
+            EntityName = safeEntityName,
             EntityId = entityId,
-            Action = action,
+            Action = safeAction,
             OldValue = oldValue == null ? null : JsonSerializer.Serialize(oldValue),
             NewValue = newValue == null ? null : JsonSerializer.Serialize(newValue),
             ModifiedByUserId = modifiedBy,

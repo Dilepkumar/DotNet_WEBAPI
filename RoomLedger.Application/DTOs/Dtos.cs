@@ -158,7 +158,7 @@ public record RejectContributionDto(string Reason);
 public record SetSharesDto(List<MemberShareDto> Shares);
 public record MemberShareDto(int? UserId, string? AliasName, decimal MonthlyShare);
 public record SetTargetDto(decimal MonthlyPoolTarget);
-public record ReimburseOutOfPocketDto(int? TargetUserId = null, int? ExpenseId = null);
+public record ReimburseOutOfPocketDto(int? TargetUserId = null, int? ExpenseId = null, string? Mode = "cash");
 public record ForgotPasswordDto([Required, EmailAddress] string Email);
 public record ResetPasswordDto(
     [Required, EmailAddress] string Email,

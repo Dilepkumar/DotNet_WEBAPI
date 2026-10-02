@@ -24,7 +24,15 @@ public class PoolService
             return (false, "You are not an active member of this group");
 
         var isAdmin = await IsAdminAsync(groupId, userId);
-        var shouldApprove = isAdmin || dto.AutoApprove;
+        
+        // Security check: Only Admin can record contributions for other members!
+        if (!isAdmin && dto.MemberUserIds != null && dto.MemberUserIds.Any(id => id != userId))
+        {
+            return (false, "Only group Admins can record contributions for other members");
+        }
+
+        // Only Admin can auto-approve! Regular member contributions always require admin approval.
+        var shouldApprove = isAdmin;
         var currentMonth = DateTime.UtcNow.ToString("yyyy-MM");
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
         var note = !string.IsNullOrWhiteSpace(dto.Message) ? dto.Message.Trim() : dto.TransactionRef?.Trim();
@@ -648,9 +656,13 @@ public class PoolService
         var monthSumsQuery = _db.PoolContributions
             .Where(c => c.GroupId == groupId && c.Status == ContributionStatus.Approved);
 
+        var pendingMonthSumsQuery = _db.PoolContributions
+            .Where(c => c.GroupId == groupId && c.Status == ContributionStatus.Pending);
+
         if (!isAllTime)
         {
             monthSumsQuery = monthSumsQuery.Where(c => c.PeriodMonth == selectedMonth);
+            pendingMonthSumsQuery = pendingMonthSumsQuery.Where(c => c.PeriodMonth == selectedMonth);
         }
 
         var monthSums = await monthSumsQuery
@@ -658,12 +670,21 @@ public class PoolService
             .Select(g => new { UserId = g.Key, Total = g.Sum(x => x.Amount) })
             .ToDictionaryAsync(x => x.UserId, x => x.Total);
 
+        var pendingMonthSums = await pendingMonthSumsQuery
+            .GroupBy(c => c.UserId)
+            .Select(g => new { UserId = g.Key, Total = g.Sum(x => x.Amount) })
+            .ToDictionaryAsync(x => x.UserId, x => x.Total);
+
         var memberStatuses = members.Select(m =>
         {
-            var contributedThisMonth = monthSums.GetValueOrDefault(m.UserId);
-            var expected = m.MonthlyPoolShare > 0
+            var rawContributed = monthSums.GetValueOrDefault(m.UserId);
+            var contributedThisMonth = Math.Round(rawContributed, 2);
+            var rawPendingApproval = pendingMonthSums.GetValueOrDefault(m.UserId);
+            var pendingApprovalAmount = Math.Round(rawPendingApproval, 2);
+            var expected = Math.Round(m.MonthlyPoolShare > 0
                 ? m.MonthlyPoolShare
-                : (members.Count > 0 ? target / members.Count : 0m);
+                : (members.Count > 0 ? (decimal)target / members.Count : 0m), 2);
+            var pendingAmount = Math.Round(Math.Max(0, expected - contributedThisMonth), 2);
 
             return new
             {
@@ -672,7 +693,9 @@ public class PoolService
                 contributedThisMonth,
                 expectedThisMonth = expected,
                 hasPaidTarget = expected > 0 && contributedThisMonth >= expected,
-                pendingAmount = Math.Max(0, expected - contributedThisMonth),
+                pendingAmount,
+                pendingApprovalAmount,
+                hasPendingApproval = pendingApprovalAmount > 0,
                 isAlias = m.IsAlias,
                 role = m.Role.ToString(),
                 isAdmin = m.Role == MemberRole.Admin
@@ -888,6 +911,8 @@ public class PoolService
                 var reimbursedAmount = g.Where(x => x.IsReimbursed).Sum(x => x.TotalAmount);
                 var pendingCount = g.Count(x => !x.IsReimbursed);
                 var isFullyReimbursed = pendingReimbursement == 0;
+                var memberStat = memberStatuses.FirstOrDefault(m => m.userId == pUserId);
+                var userPendingContribution = memberStat != null ? memberStat.pendingAmount : 0m;
                 return new
                 {
                     userId = pUserId,
@@ -897,6 +922,7 @@ public class PoolService
                     reimbursedAmount,
                     isFullyReimbursed,
                     pendingCount,
+                    userPendingContribution,
                     expenseCount = g.Count(),
                     status = isFullyReimbursed ? "Reimbursed from Pool ✓" : $"Pending Reimbursement (₹{pendingReimbursement:N0})"
                 };
@@ -944,8 +970,10 @@ public class PoolService
             percentage = maxMonth > 0 ? Math.Round((double)(m.total / maxMonth) * 100, 1) : 0
         }).ToList();
 
-        var lowThreshold = target > 0 ? (target * 0.20m) : 500m;
-        var isLowBalance = currentBalance <= lowThreshold;
+        var tenPercentTarget = target > 0 ? Math.Round(target * 0.10m, 2) : 1000m;
+        var lowThreshold = Math.Max(1000m, tenPercentTarget);
+        var isLowBalance = currentBalance <= lowThreshold || currentBalance <= 1000m;
+        var isCriticalBalance = currentBalance <= 500m;
 
         return new
         {
@@ -974,6 +1002,7 @@ public class PoolService
             totalSpent = totalSpentAllTime,
 
             isLowBalance,
+            isCriticalBalance,
             lowThreshold,
             pendingReimbursementsTotal,
             memberStatuses,
@@ -1292,34 +1321,78 @@ public class PoolService
         }
 
         var totalReimbursement = expensesToReimburse.Sum(e => e.TotalAmount);
+        var isCutContribution = string.Equals(dto.Mode, "cut_contribution", StringComparison.OrdinalIgnoreCase)
+                             || string.Equals(dto.Mode, "cut", StringComparison.OrdinalIgnoreCase);
 
-        var totalContributed = await _db.PoolContributions
-            .Where(c => c.GroupId == groupId && c.Status == ContributionStatus.Approved)
-            .SumAsync(c => (decimal?)c.Amount) ?? 0m;
-
-        var totalAlreadySpent = await _db.PoolExpenses
-            .Where(e => e.GroupId == groupId && !e.IsVoided && (!e.PaidByUserId.HasValue || e.IsReimbursed))
-            .SumAsync(e => (decimal?)e.TotalAmount) ?? 0m;
-
-        var availableBalance = totalContributed - totalAlreadySpent;
-
-        if (availableBalance < totalReimbursement)
+        if (isCutContribution)
         {
-            return (false, $"Insufficient central room pool balance (₹{availableBalance:N0} available) to reimburse ₹{totalReimbursement:N0}. Roommates need to deposit contributions first.", 0m);
-        }
+            // Mode: Cut / Offset from Member's Monthly Pool Contribution
+            // Settle out-of-pocket expenses and credit an approved contribution for this roommate in the current month.
+            var targetUserId = expensesToReimburse.First().PaidByUserId!.Value;
+            var currentMonth = DateTime.UtcNow.ToString("yyyy-MM");
+            var today = DateOnly.FromDateTime(DateTime.UtcNow);
 
-        foreach (var exp in expensesToReimburse)
+            foreach (var exp in expensesToReimburse)
+            {
+                exp.IsReimbursed = true;
+            }
+
+            var offsetContribution = new PoolContribution
+            {
+                GroupId = groupId,
+                UserId = targetUserId,
+                Amount = totalReimbursement,
+                ContributedOn = today,
+                PeriodMonth = currentMonth,
+                TransactionRef = "OUT-OF-POCKET-OFFSET",
+                Message = $"Offset from out-of-pocket expense ({expensesToReimburse.Count} item(s))",
+                Status = ContributionStatus.Approved,
+                ApprovedByUserId = currentUserId,
+                ApprovedAt = DateTime.UtcNow
+            };
+
+            _db.PoolContributions.Add(offsetContribution);
+            await _db.SaveChangesAsync();
+
+            foreach (var exp in expensesToReimburse)
+            {
+                await _audit.LogAsync("PoolExpense", exp.Id, "OffsetExpense", null, new { exp.TotalAmount, exp.PaidByUserId, SettledByUserId = currentUserId, Mode = "cut_contribution" }, currentUserId, "Offset against Monthly Pool Contribution");
+            }
+
+            var userName = await _db.Users.Where(u => u.Id == targetUserId).Select(u => u.FullName).FirstOrDefaultAsync() ?? "Roommate";
+            return (true, $"Successfully cut ₹{totalReimbursement:N0} from {userName}'s monthly contribution and marked expenses as settled.", totalReimbursement);
+        }
+        else
         {
-            exp.IsReimbursed = true;
+            // Mode: Return Cash from Central Room Pool
+            var totalContributed = await _db.PoolContributions
+                .Where(c => c.GroupId == groupId && c.Status == ContributionStatus.Approved)
+                .SumAsync(c => (decimal?)c.Amount) ?? 0m;
+
+            var totalAlreadySpent = await _db.PoolExpenses
+                .Where(e => e.GroupId == groupId && !e.IsVoided && (!e.PaidByUserId.HasValue || e.IsReimbursed))
+                .SumAsync(e => (decimal?)e.TotalAmount) ?? 0m;
+
+            var availableBalance = totalContributed - totalAlreadySpent;
+
+            if (availableBalance < totalReimbursement)
+            {
+                return (false, $"Insufficient central room pool balance (₹{availableBalance:N0} available) to reimburse ₹{totalReimbursement:N0}. Roommates need to deposit contributions first, or choose 'Cut from Contribution'.", 0m);
+            }
+
+            foreach (var exp in expensesToReimburse)
+            {
+                exp.IsReimbursed = true;
+            }
+
+            await _db.SaveChangesAsync();
+
+            foreach (var exp in expensesToReimburse)
+            {
+                await _audit.LogAsync("PoolExpense", exp.Id, "ReimburseOutOfPocket", null, new { exp.TotalAmount, exp.PaidByUserId, ReimbursedByUserId = currentUserId, Mode = "cash" }, currentUserId, "Reimbursed from Central Room Pool");
+            }
+
+            return (true, $"Successfully returned ₹{totalReimbursement:N0} from central pool for {expensesToReimburse.Count} expense(s).", totalReimbursement);
         }
-
-        await _db.SaveChangesAsync();
-
-        foreach (var exp in expensesToReimburse)
-        {
-            await _audit.LogAsync("PoolExpense", exp.Id, "ReimburseOutOfPocket", null, new { exp.TotalAmount, exp.PaidByUserId, ReimbursedByUserId = currentUserId }, currentUserId, "Reimbursed from Central Room Pool");
-        }
-
-        return (true, $"Successfully reimbursed ₹{totalReimbursement:N0} from central pool for {expensesToReimburse.Count} expense(s).", totalReimbursement);
     }
 }
