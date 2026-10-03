@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.SignalR;
 using System.Security.Claims;
+using RoomLedger.Domain.Common;
 
 namespace RoomLedger.API.Hubs;
 
@@ -30,7 +31,7 @@ public class LedgerHub : Hub
             eventType,
             payload,
             senderId = UserId,
-            timestamp = DateTime.UtcNow
+            timestamp = IndianTime.Now
         });
     }
 }

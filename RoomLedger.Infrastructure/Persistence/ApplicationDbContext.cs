@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using RoomLedger.Application.Common.Interfaces;
+using RoomLedger.Domain.Common;
 using RoomLedger.Domain.Entities;
 
 namespace RoomLedger.Infrastructure.Persistence;
@@ -32,5 +33,25 @@ public class ApplicationDbContext : DbContext, IApplicationDbContext
     public DbSet<UserPushSubscription> UserPushSubscriptions => Set<UserPushSubscription>();
 
     public override Task<int> SaveChangesAsync(CancellationToken ct = default)
-        => base.SaveChangesAsync(ct);
+    {
+        var istNow = IndianTime.Now;
+
+        foreach (var entry in ChangeTracker.Entries<BaseEntity>())
+        {
+            if (entry.State == EntityState.Added && (entry.Entity.CreatedAt == default || entry.Entity.CreatedAt == DateTime.MinValue))
+            {
+                entry.Entity.CreatedAt = istNow;
+            }
+        }
+
+        foreach (var entry in ChangeTracker.Entries<Notification>())
+        {
+            if (entry.State == EntityState.Added && (entry.Entity.CreatedAt == default || entry.Entity.CreatedAt == DateTime.MinValue))
+            {
+                entry.Entity.CreatedAt = istNow;
+            }
+        }
+
+        return base.SaveChangesAsync(ct);
+    }
 }

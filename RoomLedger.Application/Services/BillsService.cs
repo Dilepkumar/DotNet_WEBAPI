@@ -86,7 +86,7 @@ public class BillsService
                     UserId = uid,
                     ShareAmount = perHead,
                     IsPaid = dto.PayFromPool,
-                    PaidAt = dto.PayFromPool ? DateTime.UtcNow : null
+                    PaidAt = dto.PayFromPool ? IndianTime.Now : null
                 });
             }
             await _db.SaveChangesAsync();
@@ -238,7 +238,7 @@ public class BillsService
         if (split == null) return (false, "Split not found or you do not have permission to update it");
 
         split.IsPaid = !split.IsPaid;
-        split.PaidAt = split.IsPaid ? DateTime.UtcNow : null;
+        split.PaidAt = split.IsPaid ? IndianTime.Now : null;
         await _db.SaveChangesAsync();
         return (true, split.IsPaid ? "Marked as paid" : "Marked as unpaid");
     }
@@ -249,7 +249,7 @@ public class BillsService
         var bill = await _db.RecurringBills.FirstOrDefaultAsync(b => b.Id == billId && b.GroupId == groupId);
         if (bill == null) return (false, "Bill not found", 0);
 
-        var currentMonth = DateTime.UtcNow.ToString("yyyy-MM");
+        var currentMonth = IndianTime.CurrentMonth;
         var unpaidSplits = await _db.BillSplits
             .Where(s => s.GroupId == groupId && s.RecurringBillId == billId && s.BillingMonth == currentMonth && !s.IsPaid)
             .ToListAsync();

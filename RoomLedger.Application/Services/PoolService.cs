@@ -33,8 +33,8 @@ public class PoolService
 
         // Only Admin can auto-approve! Regular member contributions always require admin approval.
         var shouldApprove = isAdmin;
-        var currentMonth = DateTime.UtcNow.ToString("yyyy-MM");
-        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var currentMonth = IndianTime.CurrentMonth;
+        var today = IndianTime.Today;
         var note = !string.IsNullOrWhiteSpace(dto.Message) ? dto.Message.Trim() : dto.TransactionRef?.Trim();
 
         // If multiple members specified (e.g. ₹500 × 5 members or ₹8,000 / 5 members)
@@ -62,7 +62,7 @@ public class PoolService
                     Message = note,
                     Status = shouldApprove ? ContributionStatus.Approved : ContributionStatus.Pending,
                     ApprovedByUserId = shouldApprove ? userId : null,
-                    ApprovedAt = shouldApprove ? DateTime.UtcNow : null
+                    ApprovedAt = shouldApprove ? IndianTime.Now : null
                 });
             }
 
@@ -84,7 +84,7 @@ public class PoolService
                 Message = note,
                 Status = shouldApprove ? ContributionStatus.Approved : ContributionStatus.Pending,
                 ApprovedByUserId = shouldApprove ? userId : null,
-                ApprovedAt = shouldApprove ? DateTime.UtcNow : null
+                ApprovedAt = shouldApprove ? IndianTime.Now : null
             });
 
             await _db.SaveChangesAsync();
@@ -125,7 +125,7 @@ public class PoolService
             Description = dto.Description.Trim(),
             TotalAmount = total,
             ExpenseDate = DateOnly.TryParse(dto.ExpenseDate, out var d)
-                ? d : DateOnly.FromDateTime(DateTime.UtcNow),
+                ? d : IndianTime.Today,
             ReceiptUrl = dto.ReceiptUrl,
             Category = dto.Category,
             IsReimbursed = !paidByUserId.HasValue
@@ -201,7 +201,7 @@ public class PoolService
                         UserId = uid,
                         ShareAmount = perHead,
                         IsPaid = true,
-                        PaidAt = DateTime.UtcNow
+                        PaidAt = IndianTime.Now
                     });
                 }
                 await _db.SaveChangesAsync();
@@ -223,7 +223,7 @@ public class PoolService
 
         if (remainingPool <= threshold)
         {
-            var recentAlertCutoff = DateTime.UtcNow.AddHours(-18);
+            var recentAlertCutoff = IndianTime.Now.AddHours(-18);
             var alreadyNotified = await _db.Notifications.AnyAsync(n =>
                 n.Type == "pool_low_balance" && n.CreatedAt > recentAlertCutoff);
 
@@ -246,7 +246,7 @@ public class PoolService
                         Title = "Low Pool Fund Balance",
                         Message = alertText,
                         Type = "pool_low_balance",
-                        CreatedAt = DateTime.UtcNow
+                        CreatedAt = IndianTime.Now
                     });
                 }
                 await _db.SaveChangesAsync();
@@ -551,7 +551,7 @@ public class PoolService
             .SumAsync(e => (decimal?)e.TotalAmount) ?? 0m;
 
         // 2. PARSE SELECTED MONTH & CARRYOVER OPENING BALANCE
-        var nowMonthStr = DateTime.UtcNow.ToString("yyyy-MM");
+        var nowMonthStr = IndianTime.CurrentMonth;
         var selectedMonth = !string.IsNullOrWhiteSpace(month) ? month.Trim() : nowMonthStr;
         bool isAllTime = selectedMonth.Equals("all", StringComparison.OrdinalIgnoreCase);
 
@@ -566,7 +566,7 @@ public class PoolService
         else if (!isAllTime)
         {
             selectedMonth = nowMonthStr;
-            startOfMonth = new DateOnly(DateTime.UtcNow.Year, DateTime.UtcNow.Month, 1);
+            startOfMonth = new DateOnly(IndianTime.Now.Year, IndianTime.Now.Month, 1);
             endOfMonth = startOfMonth.Value.AddMonths(1).AddDays(-1);
         }
 
@@ -1042,7 +1042,7 @@ public class PoolService
 
         c.Status = ContributionStatus.Approved;
         c.ApprovedByUserId = adminId;
-        c.ApprovedAt = DateTime.UtcNow;
+        c.ApprovedAt = IndianTime.Now;
         await _db.SaveChangesAsync();
         await _audit.LogAsync("PoolContribution", c.Id, "Approve", null, new { c.Amount, c.UserId }, adminId, null);
         return (true, "Contribution approved");
@@ -1058,7 +1058,7 @@ public class PoolService
 
         c.Status = ContributionStatus.Rejected;
         c.ApprovedByUserId = adminId;
-        c.ApprovedAt = DateTime.UtcNow;
+        c.ApprovedAt = IndianTime.Now;
         c.RejectReason = dto.Reason;
         await _db.SaveChangesAsync();
         await _audit.LogAsync("PoolContribution", c.Id, "Reject", null, new { c.Amount, c.UserId }, adminId, dto.Reason);
@@ -1130,7 +1130,7 @@ public class PoolService
     // ───────────── LEDGER HISTORY (daily, weekly, monthly, custom) ─────────────
     public async Task<object> GetHistoryAsync(int groupId, string? period, string? fromDateStr, string? toDateStr)
     {
-        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var today = IndianTime.Today;
         DateOnly? fromDate = null;
         DateOnly? toDate = null;
 
@@ -1329,8 +1329,8 @@ public class PoolService
             // Mode: Cut / Offset from Member's Monthly Pool Contribution
             // Settle out-of-pocket expenses and credit an approved contribution for this roommate in the current month.
             var targetUserId = expensesToReimburse.First().PaidByUserId!.Value;
-            var currentMonth = DateTime.UtcNow.ToString("yyyy-MM");
-            var today = DateOnly.FromDateTime(DateTime.UtcNow);
+            var currentMonth = IndianTime.CurrentMonth;
+            var today = IndianTime.Today;
 
             foreach (var exp in expensesToReimburse)
             {
@@ -1348,7 +1348,7 @@ public class PoolService
                 Message = $"Offset from out-of-pocket expense ({expensesToReimburse.Count} item(s))",
                 Status = ContributionStatus.Approved,
                 ApprovedByUserId = currentUserId,
-                ApprovedAt = DateTime.UtcNow
+                ApprovedAt = IndianTime.Now
             };
 
             _db.PoolContributions.Add(offsetContribution);

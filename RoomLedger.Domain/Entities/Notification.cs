@@ -1,4 +1,6 @@
-﻿namespace RoomLedger.Domain.Entities;
+using RoomLedger.Domain.Common;
+
+namespace RoomLedger.Domain.Entities;
 
 public class Notification
 {
@@ -9,6 +11,6 @@ public class Notification
     public string Message { get; set; } = default!;
     public string Type { get; set; } = default!;
     public bool IsRead { get; set; }
-    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public DateTime CreatedAt { get; set; } = IndianTime.Now;
     public User User { get; set; } = default!;
 }

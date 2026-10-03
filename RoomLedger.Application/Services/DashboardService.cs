@@ -22,8 +22,8 @@ public class DashboardService
     public async Task<DashboardDto> GetAsync(int groupId, string? month = null)
     {
         var uid = _me.UserId;
-        var now = DateTime.UtcNow;
-        var currentMonth = now.ToString("yyyy-MM");
+        var now = IndianTime.Now;
+        var currentMonth = IndianTime.CurrentMonth;
 
         // 1. Group Identity
         var group = await _db.Groups.AsNoTracking().FirstOrDefaultAsync(g => g.Id == groupId);

@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using RoomLedger.Application.DTOs;
 using RoomLedger.Application.Services;
+using RoomLedger.Domain.Common;
 
 using RoomLedger.API.Infrastructure.Filters;
 
@@ -36,7 +37,7 @@ public class BillsController : ControllerBase
     [HttpGet]
     public async Task<IActionResult> GetBills(int groupId, [FromQuery] string? month)
     {
-        var m = string.IsNullOrWhiteSpace(month) ? DateTime.UtcNow.ToString("yyyy-MM") : month;
+        var m = string.IsNullOrWhiteSpace(month) ? IndianTime.CurrentMonth : month;
         return Ok(await _bills.GetMonthAsync(groupId, m));
     }
 
@@ -47,7 +48,7 @@ public class BillsController : ControllerBase
     [HttpPost("generate-next-month")]
     public async Task<IActionResult> GenerateNextMonth(int groupId)
     {
-        var nextMonth = DateTime.UtcNow.AddMonths(1).ToString("yyyy-MM");
+        var nextMonth = IndianTime.Now.AddMonths(1).ToString("yyyy-MM");
         var (ok, msg) = await _bills.GenerateSplitsAsync(groupId, Me, nextMonth);
         return ok ? Ok(new { message = msg }) : BadRequest(new { message = msg });
     }

@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.SignalR;
 using RoomLedger.API.Hubs;
 using RoomLedger.Application.Common.Interfaces;
+using RoomLedger.Domain.Common;
 
 namespace RoomLedger.API.Services;
 
@@ -21,7 +22,7 @@ public class LedgerBroadcastService : ILedgerBroadcastService
             groupId,
             eventType,
             payload,
-            timestamp = DateTime.UtcNow
+            timestamp = IndianTime.Now
         });
     }
 }

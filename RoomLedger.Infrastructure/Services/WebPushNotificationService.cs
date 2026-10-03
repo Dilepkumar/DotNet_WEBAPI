@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RoomLedger.Application.Common.Interfaces;
 using RoomLedger.Infrastructure.Configuration;
+using RoomLedger.Domain.Common;
 using WebPush;
 
 namespace RoomLedger.Infrastructure.Services;
@@ -47,7 +48,7 @@ public class WebPushNotificationService : IPushNotificationService
                 data = new
                 {
                     url = url ?? "/",
-                    dateOfArrival = DateTime.UtcNow
+                    dateOfArrival = IndianTime.Now
                 },
                 actions = new[]
                 {

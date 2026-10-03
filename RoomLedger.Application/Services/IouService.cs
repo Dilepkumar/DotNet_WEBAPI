@@ -54,7 +54,7 @@ public class IouService
             Description = dto.Description,
             Amount = dto.Amount,
             ExpenseDate = DateOnly.TryParse(dto.ExpenseDate, out var d)
-                ? d : DateOnly.FromDateTime(DateTime.UtcNow)
+                ? d : IndianTime.Today
         };
         expense.Participants = dto.Participants.Select(p => new IouParticipant
         {
@@ -190,7 +190,7 @@ public class IouService
             PayerId = fromUserId,          // who owed
             PayeeId = dto.PayeeId,         // who is owed
             Amount = dto.Amount,
-            SettledOn = DateOnly.FromDateTime(DateTime.UtcNow),
+            SettledOn = IndianTime.Today,
             TransactionRef = dto.TransactionRef
         });
         await _db.SaveChangesAsync();
@@ -388,7 +388,7 @@ public class IouService
             Description = dto.Description,
             Amount = dto.Amount,
             ExpenseDate = DateOnly.TryParse(dto.ExpenseDate, out var d)
-                ? d : DateOnly.FromDateTime(DateTime.UtcNow)
+                ? d : IndianTime.Today
         };
 
         foreach (var i in dto.Items)

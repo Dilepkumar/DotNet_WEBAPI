@@ -208,7 +208,7 @@ public class GroupsController : ControllerBase
             Title = "Removed from Flat",
             Message = $"You have been removed from {grp?.GroupName ?? "the group"} by the administrator.",
             Type = "group_removed",
-            CreatedAt = DateTime.UtcNow
+            CreatedAt = IndianTime.Now
         });
 
         await _db.SaveChangesAsync();
@@ -256,7 +256,7 @@ public class GroupsController : ControllerBase
 
         // Safe to inactivate
         g.IsActive = false;
-        g.InactivatedAt = DateTime.UtcNow;
+        g.InactivatedAt = IndianTime.Now;
         g.InactivatedByUserId = Me;
 
         // Broadcast notifications to all active members of the flat
@@ -273,7 +273,7 @@ public class GroupsController : ControllerBase
                 Title = "Flat Inactivated",
                 Message = $"Flat '{g.GroupName}' has been deactivated and archived by the administrator.",
                 Type = "group_inactivated",
-                CreatedAt = DateTime.UtcNow
+                CreatedAt = IndianTime.Now
             });
         }
 
