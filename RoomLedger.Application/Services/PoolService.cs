@@ -229,10 +229,7 @@ public class PoolService
 
             if (!alreadyNotified)
             {
-                var members = await _db.GroupMembers
-                    .Where(m => m.GroupId == groupId && m.Status == MemberStatus.Active)
-                    .Select(m => m.UserId)
-                    .ToListAsync();
+                var members = await _db.GroupMembers.Where(m => m.GroupId == groupId && m.Status == MemberStatus.Active).Select(m => m.UserId).ToListAsync();
 
                 var alertText = targetAmt > 0
                     ? $"⚠️ Low Pool Alert: Only ₹{remainingPool:F2} remaining ({Math.Max(0, Math.Round((remainingPool / targetAmt) * 100))}% of ₹{targetAmt:N0} target). Please contribute to cover upcoming daily expenses."
@@ -265,8 +262,7 @@ public class PoolService
     // ───────────── POOL OVERVIEW: balance + recent activity ─────────────
     public async Task<object> GetOverviewAsync(int groupId)
     {
-        var contributed = await _db.PoolContributions
-            .Where(c => c.GroupId == groupId).SumAsync(c => (decimal?)c.Amount) ?? 0m;
+        var contributed = await _db.PoolContributions.Where(c => c.GroupId == groupId).SumAsync(c => (decimal?)c.Amount) ?? 0m;
         var spent = await _db.PoolExpenses
                     .Where(e => e.GroupId == groupId && !e.IsVoided)
                     .SumAsync(e => (decimal?)e.TotalAmount) ?? 0m;
@@ -354,10 +350,7 @@ public class PoolService
     // ───────────── CATEGORIES (seed once — Grocery, Dairy, Gas, Cleaning…) ─────────────
     public async Task<List<object>> ListCategoriesAsync()
     {
-        return await _db.ExpenseCategories
-            .OrderBy(c => c.Name)
-            .Select(c => (object)new { c.Id, c.Name, c.Icon })
-            .ToListAsync();
+        return await _db.ExpenseCategories.OrderBy(c => c.Name).Select(c => (object)new { c.Id, c.Name, c.Icon }).ToListAsync();
     }
 
     public static string GetCategoryIcon(string? category)
@@ -406,6 +399,19 @@ public class PoolService
             .FirstOrDefaultAsync(x => x.Id == expenseId && x.GroupId == groupId);
         if (e == null) return (false, "Expense not found");
         if (e.IsVoided) return (false, "Already voided");
+
+        // Enforce: only the last recorded pool expense can be deleted/voided
+        var latestExpense = await _db.PoolExpenses
+            .Where(x => x.GroupId == groupId && !x.IsVoided)
+            .OrderByDescending(x => x.ExpenseDate)
+            .ThenByDescending(x => x.CreatedAt)
+            .ThenByDescending(x => x.Id)
+            .FirstOrDefaultAsync();
+
+        if (latestExpense == null || latestExpense.Id != expenseId)
+        {
+            return (false, "Only the last recorded pool expense can be deleted. Earlier transactions are locked to preserve ledger integrity.");
+        }
 
         var old = new { e.Description, e.TotalAmount };
         e.IsVoided = true;
@@ -482,9 +488,25 @@ public class PoolService
             e.Category = dto.Category.Trim();
         }
 
-        if (!string.IsNullOrWhiteSpace(dto.ReceiptUrl))
+        if (dto.ReceiptUrl != null)
         {
-            e.ReceiptUrl = dto.ReceiptUrl.Trim();
+            e.ReceiptUrl = string.IsNullOrWhiteSpace(dto.ReceiptUrl) ? null : dto.ReceiptUrl.Trim();
+        }
+
+        if (!string.IsNullOrWhiteSpace(dto.PayerType))
+        {
+            if (dto.PayerType == "pool")
+            {
+                e.PaidByUserId = null;
+                e.PayerName = "Central Pool";
+                e.IsReimbursed = true;
+            }
+            else if (dto.PayerType == "me" && dto.PaidByUserId.HasValue)
+            {
+                e.PaidByUserId = dto.PaidByUserId.Value;
+                var user = await _db.Users.FindAsync(dto.PaidByUserId.Value);
+                e.PayerName = user?.FullName ?? "Roommate";
+            }
         }
 
         // 2. Update line items if provided
@@ -521,6 +543,51 @@ public class PoolService
 
         return (true, $"Pool expense updated successfully. New total: ₹{newTotal:F2}");
     }
+
+    public async Task<object?> GetExpenseByIdAsync(int groupId, int expenseId)
+    {
+        var e = await _db.PoolExpenses.Include(x => x.Items).FirstOrDefaultAsync(x => x.Id == expenseId && x.GroupId == groupId);
+
+        if (e == null) return null;
+
+        var isEdited = await _db.AuditLogs.AnyAsync(a => a.EntityName == "PoolExpense" && a.EntityId == e.Id && a.Action == "Edit");
+        var isLatest = await _db.PoolExpenses
+            .Where(x => x.GroupId == groupId && !x.IsVoided)
+            .OrderByDescending(x => x.ExpenseDate)
+            .ThenByDescending(x => x.CreatedAt)
+            .ThenByDescending(x => x.Id)
+            .Select(x => x.Id)
+            .FirstOrDefaultAsync() == expenseId;
+
+        var payer = e.PaidByUserId.HasValue
+            ? await _db.Users.Where(u => u.Id == e.PaidByUserId.Value).Select(u => u.FullName).FirstOrDefaultAsync() ?? e.PayerName : "Central Pool";
+
+        return new
+        {
+            id = e.Id,
+            description = e.Description,
+            totalAmount = e.TotalAmount,
+            expenseDate = e.ExpenseDate.ToString("yyyy-MM-dd"),
+            category = e.Category,
+            paidByUserId = e.PaidByUserId,
+            payerName = payer,
+            payerType = e.PaidByUserId.HasValue ? "me" : "pool",
+            receiptUrl = e.ReceiptUrl,
+            isReimbursed = e.IsReimbursed,
+            isVoided = e.IsVoided,
+            isEdited,
+            isLatest,
+            items = e.Items.Select(i => new
+            {
+                id = i.Id,
+                name = i.ItemName,
+                qty = i.Quantity,
+                price = i.Amount,
+                categoryId = i.ExpenseCategoryId
+            }).ToList()
+        };
+    }
+
     private async Task<bool> IsAdminAsync(int groupId, int userId) =>
         await _db.GroupMembers.AnyAsync(m =>
             m.GroupId == groupId && m.UserId == userId && m.Role == MemberRole.Admin && m.Status == MemberStatus.Active);
@@ -700,7 +767,7 @@ public class PoolService
                 role = m.Role.ToString(),
                 isAdmin = m.Role == MemberRole.Admin
             };
-        }).ToList();
+        }).OrderBy(m => m.hasPaidTarget ? 1 : 0).ThenByDescending(m => m.pendingAmount).ThenBy(m => m.userName).ToList();
 
         // Recent contributions — PoolContribution HAS a User nav, so use it directly
         var recentContribs = await _db.PoolContributions
@@ -740,8 +807,7 @@ public class PoolService
                 e.Category,
                 e.IsReimbursed,
                 Items = e.Items.Select(i => new { i.Id, i.ItemName, i.Quantity, i.Amount, i.ExpenseCategoryId }).ToList()
-            })
-            .ToListAsync();
+            }).ToListAsync();
 
         var involvedUserIds = recentExpensesRaw
             .Select(e => e.RecordedByUserId)
@@ -751,6 +817,13 @@ public class PoolService
 
         var userNameMap = await _db.Users.Where(u => involvedUserIds.Contains(u.Id))
             .ToDictionaryAsync(u => u.Id, u => u.FullName);
+
+        var editedExpenseIds = await _db.AuditLogs
+            .Where(a => a.EntityName == "PoolExpense" && a.Action == "Edit")
+            .Select(a => a.EntityId)
+            .Distinct()
+            .ToListAsync();
+        var editedIdsSet = editedExpenseIds.ToHashSet();
 
         var recentExpenses = recentExpensesRaw.Select(e =>
         {
@@ -780,6 +853,7 @@ public class PoolService
                 receiptUrl = e.ReceiptUrl,
                 category = e.Category,
                 isReimbursed = e.IsReimbursed,
+                isEdited = editedIdsSet.Contains(e.Id),
                 items = e.Items
             };
         }).ToList();
@@ -894,9 +968,7 @@ public class PoolService
                 category = g.First().Category,
                 total = g.Sum(i => i.Amount),
                 count = g.Count()
-            })
-            .OrderByDescending(i => i.total)
-            .ToList();
+            }).OrderByDescending(i => i.total).ToList();
 
         // Out-of-Pocket Reimbursement Summary
         var outOfPocketSummary = allExpenses
@@ -931,8 +1003,7 @@ public class PoolService
             .ThenByDescending(x => x.totalPaid)
             .ToList();
 
-        var isAdmin = await _db.GroupMembers.AnyAsync(m => m.GroupId == groupId
-                                && m.UserId == userId && m.Role == MemberRole.Admin && m.Status == MemberStatus.Active);
+        var isAdmin = await _db.GroupMembers.AnyAsync(m => m.GroupId == groupId && m.UserId == userId && m.Role == MemberRole.Admin && m.Status == MemberStatus.Active);
 
         var pendingItems = isAdmin ? await _db.PoolContributions.Where(c => c.GroupId == groupId && c.Status == ContributionStatus.Pending)
             .Select(c => new
@@ -1163,16 +1234,18 @@ public class PoolService
         if (toDate.HasValue) contribQuery = contribQuery.Where(c => c.ContributedOn <= toDate.Value);
 
         var contribsRaw = await contribQuery
-            .OrderByDescending(c => c.ContributedOn).ThenByDescending(c => c.Id)
+            .OrderByDescending(c => c.CreatedAt)
             .Select(c => new
             {
-                id = "c" + c.Id,
+                c.Id,
+                c.CreatedAt,
+                c.ContributedOn,
                 type = "Contribution",
                 description = !string.IsNullOrWhiteSpace(c.Message)
                     ? c.Message
                     : ("Pool contribution" + (c.TransactionRef != null ? $" ({c.TransactionRef})" : "")),
                 userName = c.User.FullName,
-                date = c.ContributedOn.ToString("yyyy-MM-dd"),
+                date = c.CreatedAt.ToString("o"),
                 amount = c.Amount,
                 status = "Approved",
                 payerType = "member",
@@ -1192,10 +1265,11 @@ public class PoolService
         if (toDate.HasValue) expenseQuery = expenseQuery.Where(e => e.ExpenseDate <= toDate.Value);
 
         var expensesRaw = await expenseQuery
-            .OrderByDescending(e => e.ExpenseDate).ThenByDescending(e => e.Id)
+            .OrderByDescending(e => e.CreatedAt)
             .Select(e => new
             {
                 e.Id,
+                e.CreatedAt,
                 e.Description,
                 e.TotalAmount,
                 e.ExpenseDate,
@@ -1215,9 +1289,14 @@ public class PoolService
             .Distinct()
             .ToList();
 
-        var userNameMap = await _db.Users
-            .Where(u => involvedUserIds.Contains(u.Id))
-            .ToDictionaryAsync(u => u.Id, u => u.FullName);
+        var userNameMap = await _db.Users.Where(u => involvedUserIds.Contains(u.Id)).ToDictionaryAsync(u => u.Id, u => u.FullName);
+
+        var historyEditedIds = await _db.AuditLogs
+            .Where(a => a.EntityName == "PoolExpense" && a.Action == "Edit")
+            .Select(a => a.EntityId)
+            .Distinct()
+            .ToListAsync();
+        var historyEditedSet = historyEditedIds.ToHashSet();
 
         var mappedExpenses = expensesRaw.Select(e =>
         {
@@ -1236,7 +1315,7 @@ public class PoolService
                 type = "Expense",
                 description = e.Description,
                 userName = userDisplay,
-                date = e.ExpenseDate.ToString("yyyy-MM-dd"),
+                date = e.CreatedAt.ToString("o"),
                 amount = e.TotalAmount,
                 status = e.PaidByUserId.HasValue ? (e.IsReimbursed ? "Reimbursed ✓" : "Pending Reimbursement") : "Approved",
                 payerType = e.PaidByUserId.HasValue ? "member" : "pool",
@@ -1245,13 +1324,15 @@ public class PoolService
                 receiptUrl = e.ReceiptUrl,
                 category = e.Category,
                 isReimbursed = e.IsReimbursed,
+                isEdited = historyEditedSet.Contains(e.Id),
+                createdAt = e.CreatedAt,
                 items = (object?)e.Items
             };
         }).ToList();
 
         var allTransactions = contribsRaw.Select(c => new
         {
-            c.id,
+            id = "c" + c.Id,
             c.type,
             c.description,
             c.userName,
@@ -1264,11 +1345,28 @@ public class PoolService
             c.receiptUrl,
             c.category,
             c.isReimbursed,
+            createdAt = c.CreatedAt,
             items = (object?)null
         })
-        .Concat(mappedExpenses)
-        .OrderByDescending(t => t.date)
-        .ThenByDescending(t => t.id)
+        .Concat(mappedExpenses.Select(e => new
+        {
+            e.id,
+            e.type,
+            e.description,
+            e.userName,
+            e.date,
+            e.amount,
+            e.status,
+            e.payerType,
+            e.payerName,
+            e.recorderName,
+            e.receiptUrl,
+            e.category,
+            e.isReimbursed,
+            createdAt = e.createdAt,
+            items = e.items
+        }))
+        .OrderByDescending(t => t.createdAt)
         .ToList();
 
         var totalIn = contribsRaw.Sum(c => c.amount);
@@ -1293,10 +1391,9 @@ public class PoolService
         if (member == null) return (false, "You are not an active member of this group.", 0m);
 
         var isAdmin = member.Role == MemberRole.Admin;
-
-        if (!isAdmin && dto.TargetUserId.HasValue && dto.TargetUserId.Value != currentUserId)
+        if (!isAdmin)
         {
-            return (false, "Only group Admins can reimburse expenses for other roommates.", 0m);
+            return (false, "Only group Admins can approve and reimburse out-of-pocket roommate expenses.", 0m);
         }
 
         var query = _db.PoolExpenses.Where(e => e.GroupId == groupId && !e.IsVoided && e.PaidByUserId.HasValue && !e.IsReimbursed);
@@ -1308,10 +1405,6 @@ public class PoolService
         else if (dto.TargetUserId.HasValue)
         {
             query = query.Where(e => e.PaidByUserId == dto.TargetUserId.Value);
-        }
-        else if (!isAdmin)
-        {
-            query = query.Where(e => e.PaidByUserId == currentUserId);
         }
 
         var expensesToReimburse = await query.ToListAsync();

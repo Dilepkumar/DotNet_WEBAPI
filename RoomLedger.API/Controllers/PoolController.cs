@@ -91,6 +91,13 @@ public class PoolController : ControllerBase
         return ok ? Ok(new { message = msg }) : BadRequest(new { message = msg });
     }
 
+    [HttpGet("expenses/{expenseId:int}")]
+    public async Task<IActionResult> GetExpense(int groupId, int expenseId)
+    {
+        var expense = await _pool.GetExpenseByIdAsync(groupId, expenseId);
+        return expense != null ? Ok(expense) : NotFound(new { message = "Expense not found" });
+    }
+
     [HttpPut("expenses/{expenseId:int}")]
     [HttpPost("expenses/{expenseId:int}/edit")]
     public async Task<IActionResult> Edit(int groupId, int expenseId, EditPoolExpenseDto dto)

@@ -49,7 +49,9 @@ public record EditPoolExpenseDto(
     string? Category = null,
     List<PoolItemDto>? Items = null,
     string? ReceiptUrl = null,
-    string? Reason = null);
+    string? Reason = null,
+    int? PaidByUserId = null,
+    string? PayerType = null);
 public record IouParticipantDto(int UserId, decimal? ShareAmount);   // null = equal share
 public record IouExpenseDto(string Description, decimal Amount, List<IouParticipantDto> Participants, string? ExpenseDate);
 public record FlexibleIouExpenseDto(string Description, decimal Amount, List<IouParticipantDto>? Participants, List<string>? SharedWith, string? ExpenseDate);
