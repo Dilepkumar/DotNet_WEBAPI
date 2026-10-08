@@ -5,6 +5,7 @@ using RoomLedger.Application.Common.Interfaces;
 using RoomLedger.Infrastructure.Configuration;
 using RoomLedger.Infrastructure.Persistence;
 using RoomLedger.Infrastructure.Services;
+using RoomLedger.Infrastructure.Services.Electricity;
 
 namespace RoomLedger.Infrastructure;
 
@@ -33,8 +34,13 @@ public static class DependencyInjection
         services.Configure<WebPushSettings>(config.GetSection("WebPush"));
         services.AddScoped<IPushNotificationService, WebPushNotificationService>();
 
+        // TGSPDCL Electricity Bill Provider
+        services.Configure<TgspdclSettings>(config.GetSection("Tgspdcl"));
+        services.AddHttpClient<IElectricityBillProvider, TgspdclElectricityBillProvider>();
+
         // Automated Maintenance Background Jobs
         services.AddHostedService<DatabaseCleanupBackgroundService>();
+        services.AddHostedService<ElectricityBillMonitoringJob>();
 
         return services;
     }

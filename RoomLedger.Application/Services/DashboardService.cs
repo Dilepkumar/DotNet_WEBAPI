@@ -200,7 +200,7 @@ public class DashboardService
         // 5. Fixed Recurring Bills
         var allSplits = await _db.BillSplits
             .Include(s => s.RecurringBill)
-            .Where(s => s.GroupId == groupId && s.BillingMonth == currentMonth)
+            .Where(s => s.GroupId == groupId && s.BillingMonth == currentMonth && s.RecurringBill != null && s.RecurringBill.IsActive)
             .ToListAsync();
 
         var pendingBillsCount = allSplits.Where(s => !s.IsPaid).Select(s => s.RecurringBillId).Distinct().Count();

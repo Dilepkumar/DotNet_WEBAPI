@@ -1,4 +1,4 @@
-﻿using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection;
 using RoomLedger.Application.Common.Interfaces;
 using RoomLedger.Application.Services;
 
@@ -15,6 +15,7 @@ public static class DependencyInjection
         services.AddScoped<IAuditService, AuditService>();
         services.AddScoped<DashboardService>();
         services.AddScoped<NotificationService>();
+        services.AddScoped<ElectricityBillService>();
         return services;
     }
 }

@@ -177,3 +177,120 @@ public record ChangePasswordDto(
     [Required, MinLength(8)] string NewPassword);
 public record PushSubscriptionDto(string Endpoint, PushKeysDto Keys);
 public record PushKeysDto(string P256dh, string Auth);
+
+// ───────────────────── ELECTRICITY MONITORING DTOs ─────────────────────
+public record CreateElectricityAccountDto(
+    [Required] int GroupId,
+    [Required] string BillerId,
+    string? ConsumerNumber,
+    [Required] Dictionary<string, string> CustomerParameters,
+    int? ExpectedBillDayOfMonth = null);
+
+public record UpdateElectricityAccountDto(
+    int? ExpectedBillDayOfMonth = null,
+    bool? IsActive = null);
+
+public record ElectricityAccountDto(
+    int Id,
+    int ElectricityAccountId,
+    int GroupId,
+    string BillerId,
+    string BillerName,
+    string ConsumerNumber,
+    Dictionary<string, string> CustomerParameters,
+    string? CustomerName,
+    int CreatedByUserId,
+    bool IsActive,
+    int? ExpectedBillDayOfMonth,
+    DateTime? EstimatedNextBillDate,
+    string MonitoringStatus,
+    DateTime? LastCheckedAt,
+    DateTime? NextCheckAt,
+    string? LastCheckStatus,
+    string? LastCheckMessage,
+    int ManualChecksTodayCount,
+    int RemainingManualChecksToday,
+    DateTime CreatedAt,
+    ElectricityBillDto? LatestBill);
+
+public record ElectricityBillDto(
+    int Id,
+    int ElectricityBillId,
+    int ElectricityAccountId,
+    int GroupId,
+    string BillerId,
+    string BillerName,
+    string ConsumerNumber,
+    string? CustomerName,
+    string? BillNumber,
+    DateTime? BillDate,
+    string? BillPeriod,
+    DateTime? DueDate,
+    decimal BillAmount,
+    decimal ACDAmount,
+    decimal Arrears,
+    decimal LateFee,
+    decimal TotalAmount,
+    string? ProviderReference,
+    string FetchSource,
+    bool IsSplitCreated,
+    DateTime CreatedAt,
+    bool IsPaidAtProvider = false,
+    DateTime? PaidAtProviderDate = null);
+
+public record ElectricityMonitoringStatusDto(
+    int AccountId,
+    int ElectricityAccountId,
+    string BillerName,
+    string ConsumerNumber,
+    string MonitoringStatus,
+    DateTime? LastCheckedAt,
+    DateTime? NextCheckAt,
+    string? LastCheckStatus,
+    string? LastCheckMessage,
+    int ManualChecksTodayCount,
+    int RemainingManualChecksToday,
+    bool CanManualCheck,
+    List<ElectricityCheckLogDto> RecentLogs);
+
+public record ElectricityCheckLogDto(
+    int Id,
+    int ElectricityCheckLogId,
+    string CheckType,
+    string Status,
+    string? Message,
+    DateTime CheckedAt);
+
+public record ElectricitySplitItemDto(
+    int UserId,
+    string UserName,
+    decimal ShareAmount,
+    bool IsPaid,
+    DateTime? PaidAt);
+
+public record ElectricityBillSplitsDto(
+    int BillId,
+    string? BillNumber,
+    string? BillPeriod,
+    decimal TotalAmount,
+    DateTime? DueDate,
+    List<ElectricitySplitItemDto> Splits);
+
+public record ElectricityBillerInfo(string Id, string Name, string State, string Coverage);
+
+public record ElectricityCustomerParam(
+    string ParamId,
+    string ParamName,
+    string DataType,
+    bool IsOptional,
+    int? MinLength,
+    int? MaxLength,
+    string? Regex,
+    string? Hint);
+
+public record ElectricityBillerDetailDto(
+    string BillerId,
+    string BillerName,
+    string Category,
+    string State,
+    List<ElectricityCustomerParam> CustomerParams);

@@ -183,7 +183,7 @@ public class BillsService
         }
 
         var rows = await _db.BillSplits
-            .Where(s => s.GroupId == groupId && s.BillingMonth == billingMonth)
+            .Where(s => s.GroupId == groupId && s.BillingMonth == billingMonth && s.RecurringBill != null && s.RecurringBill.IsActive)
             .Select(s => new
             {
                 s.Id,
@@ -243,9 +243,12 @@ public class BillsService
         return (true, split.IsPaid ? "Marked as paid" : "Marked as unpaid");
     }
 
-    // ───────────── SEND BILL REMINDER TO UNPAID MEMBERS ─────────────
+    // ───────────── SEND BILL REMINDER TO UNPAID MEMBERS (ADMIN ONLY) ─────────────
     public async Task<(bool ok, string message, int count)> RemindPendingAsync(int groupId, int userId, int billId)
     {
+        if (!await IsAdminAsync(groupId, userId))
+            return (false, "Only group Admin can send bill reminders", 0);
+
         var bill = await _db.RecurringBills.FirstOrDefaultAsync(b => b.Id == billId && b.GroupId == groupId);
         if (bill == null) return (false, "Bill not found", 0);
 
@@ -281,11 +284,31 @@ public class BillsService
     {
         if (!await IsAdminAsync(groupId, userId))
             return (false, "Only group Admin can deactivate bills");
+
         var bill = await _db.RecurringBills.FirstOrDefaultAsync(b => b.Id == billId && b.GroupId == groupId);
         if (bill == null) return (false, "Bill not found");
+
         bill.IsActive = false;
+
+        // Clean up all splits for this bill so it stops showing in the active checklist
+        var splits = await _db.BillSplits
+            .Where(s => s.RecurringBillId == billId)
+            .ToListAsync();
+
+        if (splits.Count > 0)
+        {
+            _db.BillSplits.RemoveRange(splits);
+        }
+
+        // If this was an electricity bill, mark IsSplitCreated = true so auto-heal does not resurrect it
+        var elecBill = await _db.ElectricityBills.FirstOrDefaultAsync(b => b.RecurringBillId == billId);
+        if (elecBill != null)
+        {
+            elecBill.IsSplitCreated = true;
+        }
+
         await _db.SaveChangesAsync();
-        return (true, "Bill deactivated");
+        return (true, "Bill deactivated successfully");
     }
 
     // ───────────── MONTH-OVER-MONTH TREND (analytics from your prompt) ─────────────

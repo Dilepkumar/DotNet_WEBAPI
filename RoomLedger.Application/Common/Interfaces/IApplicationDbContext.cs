@@ -27,5 +27,8 @@ public interface IApplicationDbContext
     public DbSet<Notification> Notifications { get; }
     DbSet<EmailTemplate> EmailTemplates { get; }
     DbSet<UserPushSubscription> UserPushSubscriptions { get; }
+    DbSet<ElectricityAccount> ElectricityAccounts { get; }
+    DbSet<ElectricityBill> ElectricityBills { get; }
+    DbSet<ElectricityCheckLog> ElectricityCheckLogs { get; }
     Task<int> SaveChangesAsync(CancellationToken ct = default);
 }

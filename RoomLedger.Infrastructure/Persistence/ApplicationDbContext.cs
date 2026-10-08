@@ -31,6 +31,9 @@ public class ApplicationDbContext : DbContext, IApplicationDbContext
     public DbSet<Notification> Notifications => Set<Notification>();
     public DbSet<EmailTemplate> EmailTemplates => Set<EmailTemplate>();
     public DbSet<UserPushSubscription> UserPushSubscriptions => Set<UserPushSubscription>();
+    public DbSet<ElectricityAccount> ElectricityAccounts => Set<ElectricityAccount>();
+    public DbSet<ElectricityBill> ElectricityBills => Set<ElectricityBill>();
+    public DbSet<ElectricityCheckLog> ElectricityCheckLogs => Set<ElectricityCheckLog>();
 
     public override Task<int> SaveChangesAsync(CancellationToken ct = default)
     {
@@ -53,5 +56,25 @@ public class ApplicationDbContext : DbContext, IApplicationDbContext
         }
 
         return base.SaveChangesAsync(ct);
+    }
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        base.OnModelCreating(modelBuilder);
+
+        modelBuilder.Entity<ElectricityAccount>(entity =>
+        {
+            entity.Property(e => e.Id).HasColumnName("ElectricityAccountId");
+        });
+
+        modelBuilder.Entity<ElectricityBill>(entity =>
+        {
+            entity.Property(e => e.Id).HasColumnName("ElectricityBillId");
+        });
+
+        modelBuilder.Entity<ElectricityCheckLog>(entity =>
+        {
+            entity.Property(e => e.Id).HasColumnName("ElectricityCheckLogId");
+        });
     }
 }
