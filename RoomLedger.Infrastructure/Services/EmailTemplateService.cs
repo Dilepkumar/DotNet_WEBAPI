@@ -44,6 +44,8 @@ public class EmailTemplateService : IEmailTemplateService
                 var rawKey = key.Trim('{', '}');
                 subject = subject.Replace($"{{{rawKey}}}", replacement);
                 htmlBody = htmlBody.Replace($"{{{rawKey}}}", replacement);
+                subject = subject.Replace($"{{{{{rawKey}}}}}", replacement);
+                htmlBody = htmlBody.Replace($"{{{{{rawKey}}}}}", replacement);
             }
 
             await _emailService.SendAsync(toEmail, subject, htmlBody);

@@ -243,6 +243,68 @@ public class BillsService
         return (true, split.IsPaid ? "Marked as paid" : "Marked as unpaid");
     }
 
+    // ───────────── EXPLICIT MARK RECEIVED (ADMIN OR MEMBER) ─────────────
+    public async Task<(bool ok, string message)> MarkPaidExplicitAsync(int groupId, int userId, int splitId, bool isPaid = true)
+    {
+        var isAdmin = await IsAdminAsync(groupId, userId);
+        var split = await _db.BillSplits.FirstOrDefaultAsync(s =>
+            s.Id == splitId && s.GroupId == groupId && (s.UserId == userId || isAdmin));
+        if (split == null) return (false, "Split not found or you do not have permission to update it");
+
+        split.IsPaid = isPaid;
+        split.PaidAt = isPaid ? IndianTime.Now : null;
+        await _db.SaveChangesAsync();
+        return (true, isPaid ? (isAdmin ? "Marked payment as received" : "Marked as paid") : "Marked as unpaid");
+    }
+
+    // ───────────── NOTIFY ADMIN THAT UPI PAYMENT WAS SENT (MEMBER -> ADMIN) ─────────────
+    public async Task<(bool ok, string message)> NotifyPaymentSentAsync(int groupId, int userId, int splitId, NotifyPaymentDto dto)
+    {
+        var split = await _db.BillSplits
+            .Include(s => s.RecurringBill)
+            .FirstOrDefaultAsync(s => s.Id == splitId && s.GroupId == groupId && s.UserId == userId);
+
+        if (split == null)
+            return (false, "Bill split not found or you do not have permission");
+
+        split.IsPaid = true;
+        split.PaidAt = IndianTime.Now;
+        await _db.SaveChangesAsync();
+
+        var billName = split.RecurringBill?.BillName ?? "Bill";
+        var payer = await _db.Users.FirstOrDefaultAsync(u => u.Id == userId);
+        var payerName = payer?.FullName ?? "Flatmate";
+
+        List<int> targetAdminIds;
+        if (dto.AdminUserId.HasValue)
+        {
+            targetAdminIds = new List<int> { dto.AdminUserId.Value };
+        }
+        else
+        {
+            targetAdminIds = await _db.GroupMembers
+                .Where(m => m.GroupId == groupId && m.Role == MemberRole.Admin && m.Status == MemberStatus.Active)
+                .Select(m => m.UserId)
+                .ToListAsync();
+        }
+
+        var upiNote = !string.IsNullOrWhiteSpace(dto.UpiId) ? $" (UPI: {dto.UpiId})" : "";
+        foreach (var adminId in targetAdminIds)
+        {
+            if (adminId != userId)
+            {
+                await _notifications.PushAsync(
+                    adminId,
+                    groupId,
+                    $"💸 Bill Payment: {billName}",
+                    $"{payerName} paid ₹{split.ShareAmount:N2} for '{billName}' via UPI{upiNote}. Please verify receipt.",
+                    "BILL_PAYMENT_SENT");
+            }
+        }
+
+        return (true, "Payment recorded! Group Admin has been notified to verify.");
+    }
+
     // ───────────── SEND BILL REMINDER TO UNPAID MEMBERS (ADMIN ONLY) ─────────────
     public async Task<(bool ok, string message, int count)> RemindPendingAsync(int groupId, int userId, int billId)
     {

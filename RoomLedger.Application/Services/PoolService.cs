@@ -10,10 +10,13 @@ public class PoolService
 {
     private readonly IApplicationDbContext _db;
     private readonly IAuditService _audit;
-    public PoolService(IApplicationDbContext db, IAuditService audit)
+    private readonly NotificationService _notifications;
+
+    public PoolService(IApplicationDbContext db, IAuditService audit, NotificationService notifications)
     {
         _db = db;
         _audit = audit;
+        _notifications = notifications;
     }
 
     // ───────────────────── CONTRIBUTE TO POOL ─────────────────────
@@ -88,6 +91,33 @@ public class PoolService
             });
 
             await _db.SaveChangesAsync();
+
+            if (!shouldApprove)
+            {
+                var adminUserIds = await _db.GroupMembers
+                    .Where(m => m.GroupId == groupId && m.Role == MemberRole.Admin && m.Status == MemberStatus.Active)
+                    .Select(m => m.UserId)
+                    .ToListAsync();
+                var contributor = await _db.Users.FindAsync(userId);
+                var contributorName = contributor?.FullName ?? "Roommate";
+                foreach (var adminId in adminUserIds)
+                {
+                    if (adminId != userId)
+                    {
+                        _db.Notifications.Add(new Notification
+                        {
+                            UserId = adminId,
+                            GroupId = groupId,
+                            Title = "💰 Pool Contribution Approval Needed",
+                            Message = $"{contributorName} submitted a pool contribution of ₹{dto.Amount:N2}. Please review and approve.",
+                            Type = "pool_contribution_approval",
+                            CreatedAt = IndianTime.Now
+                        });
+                    }
+                }
+                await _db.SaveChangesAsync();
+            }
+
             return (true, shouldApprove ? $"Added ₹{dto.Amount:N0} to Pool" : "Contribution submitted — waiting for admin approval");
         }
     }
@@ -166,6 +196,32 @@ public class PoolService
         _db.PoolExpenses.Add(expense);
         await _db.SaveChangesAsync();
 
+        // Notify Admins for approval if expense was paid out-of-pocket
+        if (paidByUserId.HasValue)
+        {
+            var adminUserIds = await _db.GroupMembers
+                .Where(m => m.GroupId == groupId && m.Role == MemberRole.Admin && m.Status == MemberStatus.Active)
+                .Select(m => m.UserId)
+                .ToListAsync();
+
+            foreach (var adminId in adminUserIds)
+            {
+                if (adminId != userId)
+                {
+                    _db.Notifications.Add(new Notification
+                    {
+                        UserId = adminId,
+                        GroupId = groupId,
+                        Title = "⚠️ Out-of-Pocket Expense Approval Needed",
+                        Message = $"{payerName} spent ₹{total:N2} from their own pocket for '{expense.Description}'. Please review and approve reimbursement.",
+                        Type = "pool_expense_approval",
+                        CreatedAt = IndianTime.Now
+                    });
+                }
+            }
+            await _db.SaveChangesAsync();
+        }
+
         if (dto.RecordInBills)
         {
             var expDate = expense.ExpenseDate;
@@ -208,47 +264,8 @@ public class PoolService
             }
         }
 
-        // Low Balance Threshold Alert Check
-        var totalContributed = await _db.PoolContributions
-            .Where(c => c.GroupId == groupId && c.Status == ContributionStatus.Approved)
-            .SumAsync(c => (decimal?)c.Amount) ?? 0m;
-        var totalSpent = await _db.PoolExpenses
-            .Where(e => e.GroupId == groupId && !e.IsVoided && (!e.PaidByUserId.HasValue || e.IsReimbursed))
-            .SumAsync(e => (decimal?)e.TotalAmount) ?? 0m;
-        var remainingPool = totalContributed - totalSpent;
-
-        var grp = await _db.Groups.FindAsync(groupId);
-        var targetAmt = grp?.MonthlyPoolTarget ?? 0m;
-        var threshold = targetAmt > 0 ? (targetAmt * 0.20m) : 500m;
-
-        if (remainingPool <= threshold)
-        {
-            var recentAlertCutoff = IndianTime.Now.AddHours(-18);
-            var alreadyNotified = await _db.Notifications.AnyAsync(n =>
-                n.Type == "pool_low_balance" && n.CreatedAt > recentAlertCutoff);
-
-            if (!alreadyNotified)
-            {
-                var members = await _db.GroupMembers.Where(m => m.GroupId == groupId && m.Status == MemberStatus.Active).Select(m => m.UserId).ToListAsync();
-
-                var alertText = targetAmt > 0
-                    ? $"⚠️ Low Pool Alert: Only ₹{remainingPool:F2} remaining ({Math.Max(0, Math.Round((remainingPool / targetAmt) * 100))}% of ₹{targetAmt:N0} target). Please contribute to cover upcoming daily expenses."
-                    : $"⚠️ Low Pool Alert: Only ₹{remainingPool:F2} remaining in the pool fund. Please contribute to cover upcoming expenses.";
-
-                foreach (var memberId in members)
-                {
-                    _db.Notifications.Add(new Notification
-                    {
-                        UserId = memberId,
-                        Title = "Low Pool Fund Balance",
-                        Message = alertText,
-                        Type = "pool_low_balance",
-                        CreatedAt = IndianTime.Now
-                    });
-                }
-                await _db.SaveChangesAsync();
-            }
-        }
+        // 2-Tier Low Pool Balance Milestone Alerts (<= 1k and <= 500)
+        await CheckAndSendLowBalanceAlertAsync(groupId);
 
         var successMsg = dto.RecordInBills
             ? $"Expense of ₹{total} logged from Central Pool & recorded in Fixed Recurring Bills!"
@@ -1041,9 +1058,8 @@ public class PoolService
             percentage = maxMonth > 0 ? Math.Round((double)(m.total / maxMonth) * 100, 1) : 0
         }).ToList();
 
-        var tenPercentTarget = target > 0 ? Math.Round(target * 0.10m, 2) : 1000m;
-        var lowThreshold = Math.Max(1000m, tenPercentTarget);
-        var isLowBalance = currentBalance <= lowThreshold || currentBalance <= 1000m;
+        var lowThreshold = 1000m;
+        var isLowBalance = currentBalance <= 1000m;
         var isCriticalBalance = currentBalance <= 500m;
 
         return new
@@ -1480,12 +1496,105 @@ public class PoolService
 
             await _db.SaveChangesAsync();
 
+            // Check if cash payout caused pool to drop <= 1k or <= 500
+            await CheckAndSendLowBalanceAlertAsync(groupId);
+
             foreach (var exp in expensesToReimburse)
             {
                 await _audit.LogAsync("PoolExpense", exp.Id, "ReimburseOutOfPocket", null, new { exp.TotalAmount, exp.PaidByUserId, ReimbursedByUserId = currentUserId, Mode = "cash" }, currentUserId, "Reimbursed from Central Room Pool");
             }
 
             return (true, $"Successfully returned ₹{totalReimbursement:N0} from central pool for {expensesToReimburse.Count} expense(s).", totalReimbursement);
+        }
+    }
+
+    // ───────────── LOW POOL FUND BALANCE 2-TIER ALERTS (<= 1k and <= 500) ─────────────
+    private async Task CheckAndSendLowBalanceAlertAsync(int groupId)
+    {
+        // 1. Calculate Live Physical Cash in Hand
+        var totalContributed = await _db.PoolContributions
+            .Where(c => c.GroupId == groupId && c.Status == ContributionStatus.Approved)
+            .SumAsync(c => (decimal?)c.Amount) ?? 0m;
+        var totalSpent = await _db.PoolExpenses
+            .Where(e => e.GroupId == groupId && !e.IsVoided && (!e.PaidByUserId.HasValue || e.IsReimbursed))
+            .SumAsync(e => (decimal?)e.TotalAmount) ?? 0m;
+        var currentBalance = totalContributed - totalSpent;
+
+        // If balance is healthy (> 1,000), no low alert needed
+        if (currentBalance > 1000m) return;
+
+        // Cycle tracking: resets whenever someone adds money to the pool
+        var lastContributionTime = await _db.PoolContributions
+            .Where(c => c.GroupId == groupId && c.Status == ContributionStatus.Approved)
+            .OrderByDescending(c => c.CreatedAt)
+            .Select(c => (DateTime?)c.CreatedAt)
+            .FirstOrDefaultAsync() ?? DateTime.MinValue;
+
+        // Also allow re-alerting if 48 hours have passed with pool still depleted
+        var cycleCutoff = lastContributionTime > IndianTime.Now.AddHours(-48)
+            ? lastContributionTime
+            : IndianTime.Now.AddHours(-48);
+
+        string? alertType = null;
+        string? title = null;
+        string? alertText = null;
+
+        if (currentBalance <= 500m)
+        {
+            // Milestone 2: Critical Tier (<= 500)
+            var alreadyNotifiedCritical = await _db.Notifications.AnyAsync(n =>
+                n.GroupId == groupId &&
+                n.Type == "pool_low_500" &&
+                n.CreatedAt >= cycleCutoff);
+
+            if (!alreadyNotifiedCritical)
+            {
+                alertType = "pool_low_500";
+                title = "🚨 Critical Pool Fund Alert";
+                alertText = $"Urgent: Central Room Pool has dropped to ₹{currentBalance:N2} (below ₹500 safety floor). Immediate roommate contributions are required to cover flat bills and essentials!";
+            }
+        }
+        else if (currentBalance <= 1000m)
+        {
+            // Milestone 1: Warning Tier (<= 1,000)
+            var alreadyNotifiedWarning = await _db.Notifications.AnyAsync(n =>
+                n.GroupId == groupId &&
+                (n.Type == "pool_low_1000" || n.Type == "pool_low_500" || n.Type == "pool_low_balance") &&
+                n.CreatedAt >= cycleCutoff);
+
+            if (!alreadyNotifiedWarning)
+            {
+                alertType = "pool_low_1000";
+                title = "⚠️ Low Pool Fund Balance Warning";
+                alertText = $"The Central Room Pool has dropped to ₹{currentBalance:N2} (below ₹1,000). Please contribute soon to cover upcoming daily expenses.";
+            }
+        }
+
+        if (alertType != null && title != null && alertText != null)
+        {
+            var activeMemberIds = await _db.GroupMembers
+                .Where(m => m.GroupId == groupId && m.Status == MemberStatus.Active)
+                .Select(m => m.UserId)
+                .ToListAsync();
+
+            foreach (var memberId in activeMemberIds)
+            {
+                try
+                {
+                    await _notifications.PushAsync(
+                        memberId,
+                        groupId,
+                        title,
+                        alertText,
+                        alertType,
+                        $"/g/{groupId}/pool"
+                    );
+                }
+                catch
+                {
+                    // Notification push failure should not abort the flow
+                }
+            }
         }
     }
 }

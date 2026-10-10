@@ -1,3 +1,4 @@
+using System.Net;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
@@ -14,14 +15,22 @@ public class ElectricityBillService
     private readonly IApplicationDbContext _db;
     private readonly IElectricityBillProvider _electricityBillProvider;
     private readonly NotificationService _notifications;
+    private readonly IEmailTemplateService _templateService;
     private readonly ILogger<ElectricityBillService> _logger;
 
-    public ElectricityBillService(IApplicationDbContext db, IElectricityBillProvider electricityBillProvider, NotificationService notifications, ILogger<ElectricityBillService> logger)
+    public ElectricityBillService(IApplicationDbContext db, IElectricityBillProvider electricityBillProvider, NotificationService notifications, IEmailTemplateService templateService, ILogger<ElectricityBillService> logger)
     {
         _db = db;
         _electricityBillProvider = electricityBillProvider;
         _notifications = notifications;
+        _templateService = templateService;
         _logger = logger;
+    }
+
+    private async Task<bool> IsGroupAdminAsync(int groupId, int userId, CancellationToken ct = default)
+    {
+        return await _db.GroupMembers.AnyAsync(
+            m => m.GroupId == groupId && m.UserId == userId && m.Role == MemberRole.Admin && m.Status == MemberStatus.Active, ct);
     }
 
     // ───────────────────── BILLERS METADATA ─────────────────────
@@ -71,10 +80,10 @@ public class ElectricityBillService
 
     public async Task<(bool ok, string message, ElectricityAccountDto? account)> CreateAccountAsync(int userId, CreateElectricityAccountDto dto, CancellationToken ct = default)
     {
-        // 1. Verify user belongs to the group
-        var isMember = await _db.GroupMembers.AnyAsync(m => m.GroupId == dto.GroupId && m.UserId == userId && m.Status == MemberStatus.Active, ct);
-        if (!isMember)
-            return (false, "You must be an active member of the group to add an electricity account", null);
+        // 1. Verify user belongs to the group and has Admin role
+        var isAdmin = await IsGroupAdminAsync(dto.GroupId, userId, ct);
+        if (!isAdmin)
+            return (false, "Only group administrators can add an electricity account", null);
 
         var billerName = "Southern Power Distribution Company of Telangana Ltd (TGSPDCL)";
 
@@ -203,9 +212,9 @@ public class ElectricityBillService
         if (account == null)
             return (false, "Electricity account not found");
 
-        var isMember = await _db.GroupMembers.AnyAsync(m => m.GroupId == account.GroupId && m.UserId == userId && m.Status == MemberStatus.Active, ct);
-        if (!isMember)
-            return (false, "Unauthorized: you must be a member of this group");
+        var isAdmin = await IsGroupAdminAsync(account.GroupId, userId, ct);
+        if (!isAdmin)
+            return (false, "Unauthorized: only group administrators can delete an electricity account");
 
         account.IsActive = false;
         account.MonitoringStatus = "INACTIVE";
@@ -221,9 +230,9 @@ public class ElectricityBillService
         if (account == null)
             return (false, "Electricity account not found");
 
-        var isMember = await _db.GroupMembers.AnyAsync(m => m.GroupId == account.GroupId && m.UserId == userId && m.Status == MemberStatus.Active, ct);
-        if (!isMember)
-            return (false, "Unauthorized: you must be a member of this group");
+        var isAdmin = await IsGroupAdminAsync(account.GroupId, userId, ct);
+        if (!isAdmin)
+            return (false, "Unauthorized: only group administrators can update an electricity account");
 
         if (dto.ExpectedBillDayOfMonth.HasValue)
         {
@@ -253,9 +262,9 @@ public class ElectricityBillService
         if (account == null)
             return (false, "Electricity account not found", null, null);
 
-        var isMember = await _db.GroupMembers.AnyAsync(m => m.GroupId == account.GroupId && m.UserId == userId && m.Status == MemberStatus.Active, ct);
-        if (!isMember)
-            return (false, "Unauthorized: you must be a member of this group", null, null);
+        var isAdmin = await IsGroupAdminAsync(account.GroupId, userId, ct);
+        if (!isAdmin)
+            return (false, "Only group administrators can refresh or check electricity bills manually.", null, null);
 
         // Enforce maximum 2 manual checks per calendar day (IST)
         ResetDailyManualCheckIfNewDay(account);
@@ -380,17 +389,35 @@ public class ElectricityBillService
 
         if (bill.RecurringBillId.HasValue)
         {
+            var billingMonth = (bill.BillPeriod?.Length >= 7) ? bill.BillPeriod.Substring(0, 7) : IndianTime.CurrentMonth;
             splits = await (
                 from bs in _db.BillSplits
                 join u in _db.Users on bs.UserId equals u.Id
-                where bs.RecurringBillId == bill.RecurringBillId.Value
+                where bs.RecurringBillId == bill.RecurringBillId.Value && bs.BillingMonth == billingMonth
                 select new ElectricitySplitItemDto(
                     u.Id,
                     u.FullName,
                     bs.ShareAmount,
                     bs.IsPaid,
-                    bs.PaidAt)
+                    bs.PaidAt,
+                    bs.Id)
             ).ToListAsync(ct);
+
+            if (splits.Count == 0)
+            {
+                splits = await (
+                    from bs in _db.BillSplits
+                    join u in _db.Users on bs.UserId equals u.Id
+                    where bs.RecurringBillId == bill.RecurringBillId.Value
+                    select new ElectricitySplitItemDto(
+                        u.Id,
+                        u.FullName,
+                        bs.ShareAmount,
+                        bs.IsPaid,
+                        bs.PaidAt,
+                        bs.Id)
+                ).ToListAsync(ct);
+            }
         }
 
         // Resilient fallback preview if splits table had no rows
@@ -589,6 +616,9 @@ public class ElectricityBillService
 
                     // Create Group Equal Split
                     await CreateGroupBillSplitAsync(account, savedBill, ct);
+
+                    // Send email alert to all active flatmates ONLY on new bill detection
+                    await SendNewBillAlertEmailAsync(account, savedBill, ct);
                 }
 
                 break;
@@ -972,5 +1002,88 @@ public class ElectricityBillService
             bill.CreatedAt,
             bill.IsPaidAtProvider,
             bill.PaidAtProviderDate);
+    }
+
+    // ───────────────────── NEW BILL EMAIL NOTIFICATION (DB TEMPLATE) ─────────────────────
+
+    private async Task SendNewBillAlertEmailAsync(ElectricityAccount account, ElectricityBill bill, CancellationToken ct)
+    {
+        try
+        {
+            var group = await _db.Groups.FirstOrDefaultAsync(g => g.Id == account.GroupId, ct);
+            var groupName = group?.GroupName ?? "RoomLedger";
+
+            var memberUserIds = await _db.GroupMembers
+                .Where(m => m.GroupId == account.GroupId && m.Status == MemberStatus.Active && (m.IsAlias == null || !m.IsAlias.Value))
+                .Select(m => m.UserId)
+                .Distinct()
+                .ToListAsync(ct);
+
+            if (memberUserIds.Count == 0) return;
+
+            var recipients = await _db.Users
+                .Where(u => memberUserIds.Contains(u.Id) && u.IsActive && !string.IsNullOrWhiteSpace(u.Email))
+                .ToListAsync(ct);
+
+            if (recipients.Count == 0) return;
+
+            var activeCount = memberUserIds.Count;
+            var perMemberShare = Math.Round(bill.TotalAmount / activeCount, 2, MidpointRounding.AwayFromZero);
+            var dueDateText = bill.DueDate.HasValue ? bill.DueDate.Value.ToString("dd MMM yyyy") : "Due soon";
+            var billPeriodText = !string.IsNullOrWhiteSpace(bill.BillPeriod)
+                ? bill.BillPeriod
+                : (bill.BillDate.HasValue ? bill.BillDate.Value.ToString("MMMM yyyy") : IndianTime.Now.ToString("MMMM yyyy"));
+
+            var consumerNameText = !string.IsNullOrWhiteSpace(bill.CustomerName)
+                ? bill.CustomerName
+                : (!string.IsNullOrWhiteSpace(account.CustomerName) ? account.CustomerName : "Consumer");
+
+            var billNumberText = !string.IsNullOrWhiteSpace(bill.BillNumber) ? bill.BillNumber : "N/A";
+
+            foreach (var recipient in recipients)
+            {
+                try
+                {
+                    var placeholders = new Dictionary<string, string>
+                    {
+                        { "{{USER_NAME}}", recipient.FullName },
+                        { "{{GROUP_NAME}}", groupName },
+                        { "{{TOTAL_AMOUNT}}", bill.TotalAmount.ToString("N2") },
+                        { "{{MEMBER_SHARE}}", perMemberShare.ToString("N2") },
+                        { "{{MEMBER_COUNT}}", activeCount.ToString() },
+                        { "{{BILLER_NAME}}", account.BillerName },
+                        { "{{CONSUMER_NUMBER}}", account.ConsumerNumber },
+                        { "{{CONSUMER_NAME}}", consumerNameText },
+                        { "{{BILL_PERIOD}}", billPeriodText },
+                        { "{{DUE_DATE}}", dueDateText },
+                        { "{{BILL_NUMBER}}", billNumberText },
+                        { "{{APP_NAME}}", "RoomLedger" },
+                        { "{{APP_URL}}", "https://roomledger-app.vercel.app/bills" }
+                    };
+
+                    var sent = await _templateService.SendTemplatedEmailAsync(
+                        recipient.Email,
+                        "ELECTRICITY_BILL_GENERATED",
+                        placeholders);
+
+                    if (sent)
+                    {
+                        _logger.LogInformation("Sent DB-templated electricity bill alert email to {Email} for bill #{BillId}", recipient.Email, bill.Id);
+                    }
+                    else
+                    {
+                        _logger.LogWarning("Email template 'ELECTRICITY_BILL_GENERATED' could not be sent to {Email} (template might be inactive or missing)", recipient.Email);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Failed to send DB-templated electricity bill alert email to {Email}", recipient.Email);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to broadcast DB-templated electricity bill email alerts for account #{AccountId}", account.Id);
+        }
     }
 }

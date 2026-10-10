@@ -64,7 +64,14 @@ public class BillsController : ControllerBase
     [HttpPost("splits/{splitId:int}/mark-paid")]
     public async Task<IActionResult> MarkPaid(int groupId, int splitId)
     {
-        var (ok, msg) = await _bills.TogglePaidAsync(groupId, Me, splitId);
+        var (ok, msg) = await _bills.MarkPaidExplicitAsync(groupId, Me, splitId, true);
+        return ok ? Ok(new { message = msg }) : BadRequest(new { message = msg });
+    }
+
+    [HttpPost("splits/{splitId:int}/notify-paid")]
+    public async Task<IActionResult> NotifyPaid(int groupId, int splitId, [FromBody] NotifyPaymentDto? dto)
+    {
+        var (ok, msg) = await _bills.NotifyPaymentSentAsync(groupId, Me, splitId, dto ?? new NotifyPaymentDto());
         return ok ? Ok(new { message = msg }) : BadRequest(new { message = msg });
     }
 

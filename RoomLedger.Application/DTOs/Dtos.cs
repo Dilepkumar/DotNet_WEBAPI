@@ -266,7 +266,13 @@ public record ElectricitySplitItemDto(
     string UserName,
     decimal ShareAmount,
     bool IsPaid,
-    DateTime? PaidAt);
+    DateTime? PaidAt,
+    int? SplitId = null);
+
+public record NotifyPaymentDto(
+    int? AdminUserId = null,
+    string? UpiId = null,
+    string? Note = null);
 
 public record ElectricityBillSplitsDto(
     int BillId,

@@ -21,7 +21,7 @@ public class NotificationService
         _push = push;
     }
 
-    public async Task PushAsync(int userId, int? groupId, string title, string message, string type)
+    public async Task PushAsync(int userId, int? groupId, string title, string message, string type, string? customTargetUrl = null)
     {
         _db.Notifications.Add(new Notification
         { UserId = userId, GroupId = groupId, Title = title, Message = message, Type = type });
@@ -29,7 +29,9 @@ public class NotificationService
 
         try
         {
-            var targetUrl = groupId.HasValue ? $"/g/{groupId.Value}/dashboard" : "/notifications";
+            var targetUrl = !string.IsNullOrWhiteSpace(customTargetUrl)
+                ? customTargetUrl
+                : (groupId.HasValue ? $"/g/{groupId.Value}/dashboard" : "/notifications");
             await _push.SendPushNotificationAsync(userId, title, message, targetUrl);
         }
         catch

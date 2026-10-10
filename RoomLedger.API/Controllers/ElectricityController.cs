@@ -98,6 +98,11 @@ public class ElectricityController : ControllerBase
 
         if (!ok)
         {
+            if (message.Contains("administrator", StringComparison.OrdinalIgnoreCase) || message.Contains("Unauthorized", StringComparison.OrdinalIgnoreCase))
+            {
+                return StatusCode(403, new { message });
+            }
+
             // If manual limit reached, return 429 Too Many Requests or 400 with detail
             return StatusCode(429, new
             {
