@@ -569,9 +569,18 @@ public class ElectricityBillService
                         .OrderByDescending(b => b.BillDate ?? b.CreatedAt)
                         .FirstOrDefaultAsync(ct);
 
-                    account.MonitoringStatus = "BILL_GENERATED";
                     account.EstimatedNextBillDate = CalculateNextEstimatedBillDate(account, savedBill);
-                    account.NextCheckAt = CalculateNextCycleMonitoringStart(account.EstimatedNextBillDate);
+
+                    if (savedBill != null && savedBill.IsPaidAtProvider)
+                    {
+                        account.MonitoringStatus = "BILL_SETTLED";
+                        account.NextCheckAt = CalculateNextCycleMonitoringStart(account.EstimatedNextBillDate);
+                    }
+                    else
+                    {
+                        account.MonitoringStatus = "BILL_GENERATED";
+                        account.NextCheckAt = GetNextScheduledCheckSlot(now);
+                    }
 
                     if (savedBill != null && (!savedBill.IsSplitCreated || savedBill.RecurringBillId == null))
                     {
@@ -607,12 +616,10 @@ public class ElectricityBillService
                     _db.ElectricityBills.Add(savedBill);
                     await _db.SaveChangesAsync(ct);
 
-                    // Stop monitoring current billing cycle
+                    // Bill is generated: keep checking at regular slots (10 AM / 10 PM) until paid at provider
                     account.MonitoringStatus = "BILL_GENERATED";
-
-                    // Schedule next billing cycle check (approx 2-3 days before expected bill generation)
                     account.EstimatedNextBillDate = CalculateNextEstimatedBillDate(account, savedBill);
-                    account.NextCheckAt = CalculateNextCycleMonitoringStart(account.EstimatedNextBillDate);
+                    account.NextCheckAt = GetNextScheduledCheckSlot(now);
 
                     // Create Group Equal Split
                     await CreateGroupBillSplitAsync(account, savedBill, ct);

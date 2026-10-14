@@ -29,6 +29,11 @@ public static class IndianTime
     }
 
     /// <summary>
+    /// The Indian Standard Time ZoneInfo instance
+    /// </summary>
+    public static TimeZoneInfo Zone => IstZone;
+
+    /// <summary>
     /// Current DateTime in Indian Standard Time (IST, UTC+05:30)
     /// </summary>
     public static DateTime Now => TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, IstZone);

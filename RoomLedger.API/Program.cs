@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi;
+using Hangfire;
 using RoomLedger.Application;
 using RoomLedger.Application.Common.Interfaces;
 using RoomLedger.API.Hubs;
@@ -107,6 +108,15 @@ app.UseStaticFiles();
 
 app.UseAuthentication();
 app.UseAuthorization();
+
+// ───────────── Hangfire Dashboard & Background Jobs ─────────────
+app.UseHangfireDashboard("/hangfire", new DashboardOptions
+{
+    Authorization = new[] { new RoomLedger.Infrastructure.Configuration.HangfireDashboardAuthorizationFilter() },
+    DashboardTitle = "RoomLedger Background Jobs"
+});
+
+RoomLedger.Infrastructure.Services.HangfireJobScheduler.ConfigureRecurringJobs();
 
 app.MapControllers();
 app.MapHub<LedgerHub>("/hubs/ledger");

@@ -1,6 +1,8 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Hangfire;
+using Hangfire.SqlServer;
 using RoomLedger.Application.Common.Interfaces;
 using RoomLedger.Infrastructure.Configuration;
 using RoomLedger.Infrastructure.Persistence;
@@ -38,9 +40,27 @@ public static class DependencyInjection
         services.Configure<TgspdclSettings>(config.GetSection("Tgspdcl"));
         services.AddHttpClient<IElectricityBillProvider, TgspdclElectricityBillProvider>();
 
-        // Automated Maintenance Background Jobs
-        services.AddHostedService<DatabaseCleanupBackgroundService>();
-        services.AddHostedService<ElectricityBillMonitoringJob>();
+        // Database Cleanup Service
+        services.AddScoped<IDatabaseCleanupService, DatabaseCleanupService>();
+
+        // Hangfire Distributed Background Job Processing
+        services.AddHangfire(configuration => configuration
+            .SetDataCompatibilityLevel(CompatibilityLevel.Version_180)
+            .UseSimpleAssemblyNameTypeSerializer()
+            .UseRecommendedSerializerSettings()
+            .UseSqlServerStorage(config.GetConnectionString("DefaultConnection"), new SqlServerStorageOptions
+            {
+                CommandBatchMaxTimeout = TimeSpan.FromMinutes(5),
+                SlidingInvisibilityTimeout = TimeSpan.FromMinutes(5),
+                QueuePollInterval = TimeSpan.Zero,
+                UseRecommendedIsolationLevel = true,
+                DisableGlobalLocks = true
+            }));
+
+        services.AddHangfireServer(options =>
+        {
+            options.WorkerCount = Math.Max(2, Environment.ProcessorCount);
+        });
 
         return services;
     }
