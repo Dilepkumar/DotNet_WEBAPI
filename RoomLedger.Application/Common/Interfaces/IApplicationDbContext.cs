@@ -30,5 +30,6 @@ public interface IApplicationDbContext
     DbSet<ElectricityAccount> ElectricityAccounts { get; }
     DbSet<ElectricityBill> ElectricityBills { get; }
     DbSet<ElectricityCheckLog> ElectricityCheckLogs { get; }
+    DbSet<PaymentTransaction> PaymentTransactions { get; }
     Task<int> SaveChangesAsync(CancellationToken ct = default);
 }

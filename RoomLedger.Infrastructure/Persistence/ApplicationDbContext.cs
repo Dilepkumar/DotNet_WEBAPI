@@ -34,6 +34,7 @@ public class ApplicationDbContext : DbContext, IApplicationDbContext
     public DbSet<ElectricityAccount> ElectricityAccounts => Set<ElectricityAccount>();
     public DbSet<ElectricityBill> ElectricityBills => Set<ElectricityBill>();
     public DbSet<ElectricityCheckLog> ElectricityCheckLogs => Set<ElectricityCheckLog>();
+    public DbSet<PaymentTransaction> PaymentTransactions => Set<PaymentTransaction>();
 
     public override Task<int> SaveChangesAsync(CancellationToken ct = default)
     {
@@ -75,6 +76,15 @@ public class ApplicationDbContext : DbContext, IApplicationDbContext
         modelBuilder.Entity<ElectricityCheckLog>(entity =>
         {
             entity.Property(e => e.Id).HasColumnName("ElectricityCheckLogId");
+        });
+
+        modelBuilder.Entity<PaymentTransaction>(entity =>
+        {
+            entity.HasIndex(e => e.YoupiOrderId).IsUnique();
+            entity.HasIndex(e => new { e.GroupId, e.Status });
+            entity.Property(e => e.Amount).HasPrecision(18, 2);
+            entity.HasOne(e => e.Group).WithMany().HasForeignKey(e => e.GroupId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.PayerUser).WithMany().HasForeignKey(e => e.PayerUserId).OnDelete(DeleteBehavior.Restrict);
         });
     }
 }
