@@ -43,8 +43,8 @@ public class IouService
         if (custom.Count > 0)
         {
             var shareSum = custom.Sum(p => p.ShareAmount!.Value);
-            if (shareSum != dto.Amount)
-                return (false, $"Custom shares total {shareSum} but expense is {dto.Amount} — they must match");
+            if (Math.Abs(shareSum - dto.Amount) > 0.05m)
+                return (false, $"Custom shares total ₹{shareSum:0.##} but expense is ₹{dto.Amount:0.##} — they must match");
         }
 
         var expense = new IouExpense
@@ -53,8 +53,7 @@ public class IouService
             PaidById = payerId,
             Description = dto.Description,
             Amount = dto.Amount,
-            ExpenseDate = DateOnly.TryParse(dto.ExpenseDate, out var d)
-                ? d : IndianTime.Today
+            ExpenseDate = DateOnly.TryParse(dto.ExpenseDate, out var d) ? d : IndianTime.Today
         };
         expense.Participants = dto.Participants.Select(p => new IouParticipant
         {
@@ -159,22 +158,21 @@ public class IouService
         }
 
         // settlements reduce debt (payer of settlement = debtor)
-        var settlements = await _db.IouSettlements
-            .Where(s => s.GroupId == groupId)
-            .ToListAsync();
+        var settlements = await _db.IouSettlements.Where(s => s.GroupId == groupId).ToListAsync();
         foreach (var s in settlements)
             owed[(s.PayerId, s.PayeeId)] = owed.GetValueOrDefault((s.PayerId, s.PayeeId)) - s.Amount;
 
-        // net both directions: A owes B − B owes A
+        // net both directions: A owes B − B owes A across all unique user pairs
+        var allPairs = owed.Keys.Select(k => k.from < k.to ? (u1: k.from, u2: k.to) : (u1: k.to, u2: k.from)).Distinct().ToList();
+
         var result = new List<(int, int, int, decimal)>();
-        foreach (var key in owed.Keys.ToList())
+        foreach (var (u1, u2) in allPairs)
         {
-            if (key.from >= key.to) continue;   // process each pair once
-            var ab = owed.GetValueOrDefault(key);                       // from→to
-            var ba = owed.GetValueOrDefault((key.to, key.from));        // to→from
-            var net = ab - ba;
-            if (net > 0.01m) result.Add((0, key.from, key.to, net));    //from owes to
-            if (net < -0.01m) result.Add((0, key.to, key.from, -net));  // to owes from
+            var u1OwesU2 = owed.GetValueOrDefault((u1, u2));
+            var u2OwesU1 = owed.GetValueOrDefault((u2, u1));
+            var net = u1OwesU2 - u2OwesU1;
+            if (net > 0.01m) result.Add((0, u1, u2, net));      // u1 owes u2
+            else if (net < -0.01m) result.Add((0, u2, u1, -net)); // u2 owes u1
         }
         return result;
     }
@@ -216,12 +214,8 @@ public class IouService
         var iOwe = matrix.Where(d => d.DebtorId == userId).ToList();
         var owedToMe = matrix.Where(d => d.CreditorId == userId).ToList();
 
-        var ids = iOwe.Select(d => d.CreditorId)
-            .Concat(owedToMe.Select(d => d.DebtorId))
-            .Distinct().ToList();
-        var users = await _db.Users
-            .Where(u => ids.Contains(u.Id))
-            .ToDictionaryAsync(u => u.Id, u => u);
+        var ids = iOwe.Select(d => d.CreditorId).Concat(owedToMe.Select(d => d.DebtorId)).Distinct().ToList();
+        var users = await _db.Users.Where(u => ids.Contains(u.Id)).ToDictionaryAsync(u => u.Id, u => u);
 
         var totalOwedToMe = owedToMe.Sum(d => d.Amount);
         var totalIOwe = iOwe.Sum(d => d.Amount);
@@ -319,9 +313,7 @@ public class IouService
     }
 
     private async Task<bool> IsAdminOrPayerAsync(int groupId, int userId, int payerId) =>
-        userId == payerId ||
-        await _db.GroupMembers.AnyAsync(m => m.GroupId == groupId && m.UserId == userId &&
-            m.Role == MemberRole.Admin && m.Status == MemberStatus.Active);
+        userId == payerId || await _db.GroupMembers.AnyAsync(m => m.GroupId == groupId && m.UserId == userId && m.Role == MemberRole.Admin && m.Status == MemberStatus.Active);
     // ───────────── EXPENSE HISTORY for a group ─────────────
     public async Task<object> GetExpensesAsync(int groupId)
     {
@@ -349,8 +341,7 @@ public class IouService
                     it.Amount,
                     eaters = it.Assignments.Select(a => a.UserId)
                 })
-            })
-            .ToListAsync();
+            }).ToListAsync();
 
         return expenses;
     }
