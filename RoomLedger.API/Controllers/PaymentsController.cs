@@ -10,15 +10,13 @@ namespace RoomLedger.API.Controllers;
 [Route("api/payments")]
 public class PaymentsController : ControllerBase
 {
-    private readonly IYoupiPaymentService _paymentService;
+    private readonly IPaymentService _paymentService;
     private readonly ILogger<PaymentsController> _logger;
-    private readonly IWebHostEnvironment _env;
 
-    public PaymentsController(IYoupiPaymentService paymentService, ILogger<PaymentsController> logger, IWebHostEnvironment env)
+    public PaymentsController(IPaymentService paymentService, ILogger<PaymentsController> logger)
     {
         _paymentService = paymentService;
         _logger = logger;
-        _env = env;
     }
 
     private int Me => int.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
@@ -90,62 +88,6 @@ public class PaymentsController : ControllerBase
     public async Task<IActionResult> ApprovePayment([FromBody] ApprovePaymentRequestDto dto, CancellationToken ct)
     {
         var (ok, message, transaction) = await _paymentService.ApprovePaymentAsync(Me, dto, ct);
-        if (!ok)
-        {
-            return BadRequest(new { message });
-        }
-
-        return Ok(new { message, transaction });
-    }
-
-    /// <summary>
-    /// Authoritative webhook receiver for YouPI-PG payment observer events.
-    /// Verified using HMAC-SHA256 signature in X-Youpi-Signature header.
-    /// </summary>
-    [HttpPost("webhook")]
-    [AllowAnonymous]
-    public async Task<IActionResult> Webhook(CancellationToken ct)
-    {
-        string rawBody;
-        using (var reader = new StreamReader(Request.Body))
-        {
-            rawBody = await reader.ReadToEndAsync(ct);
-        }
-
-        var signature = Request.Headers["X-Youpi-Signature"].FirstOrDefault() 
-                     ?? Request.Headers["X-Gateway-Signature"].FirstOrDefault()
-                     ?? Request.Headers["X-Signature"].FirstOrDefault()
-                     ?? Request.Headers["X-Hub-Signature-256"].FirstOrDefault()
-                     ?? "";
-
-        _logger.LogInformation("Incoming YouPI PG Webhook received. Body Length: {Length}", rawBody.Length);
-
-        var (ok, message) = await _paymentService.ProcessWebhookAsync(rawBody, signature, ct);
-        if (!ok)
-        {
-            _logger.LogWarning("Webhook rejection: {Message}", message);
-            return BadRequest(new { message });
-        }
-
-        return Ok(new { message = "Webhook processed successfully" });
-    }
-
-    /// <summary>
-    /// Simulates a real banking/YouPI webhook callback event (useful for localhost testing where external observer cannot reach port 5056)
-    /// </summary>
-    [HttpPost("simulate-webhook")]
-    [AllowAnonymous]
-    public async Task<IActionResult> SimulateWebhook([FromBody] SimulateWebhookRequestDto dto, CancellationToken ct)
-    {
-        if (!_env.IsDevelopment())
-        {
-            return NotFound(new { message = "Payment simulation endpoint is only accessible in development environment." });
-        }
-
-        if (string.IsNullOrWhiteSpace(dto.OrderId))
-            return BadRequest(new { message = "OrderId is required" });
-
-        var (ok, message, transaction) = await _paymentService.SimulateWebhookAsync(dto.OrderId, dto.Utr, ct);
         if (!ok)
         {
             return BadRequest(new { message });

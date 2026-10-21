@@ -41,20 +41,6 @@ public record PaymentTransactionDto(
     DateTime CreatedAt
 );
 
-public record YoupiWebhookPayloadDto(
-    string? Event,
-    string OrderId,
-    string? PaymentId,
-    string? Status,
-    decimal? Amount,
-    long? AmountPaise,
-    string? Utr,
-    string? PayerVpa,
-    string? PayerName,
-    string? PayerPhone,
-    Dictionary<string, string>? Metadata
-);
-
 public record ConfirmPaymentRequestDto(
     string OrderId,
     string? BankUtr = null,
@@ -70,9 +56,5 @@ public record ApprovePaymentRequestDto(
     string? RejectionReason = null
 );
 
-public record SimulateWebhookRequestDto(
-    string OrderId,
-    string? Utr = null
-);
 
 

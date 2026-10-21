@@ -40,9 +40,9 @@ public static class DependencyInjection
         services.Configure<TgspdclSettings>(config.GetSection("Tgspdcl"));
         services.AddHttpClient<IElectricityBillProvider, TgspdclElectricityBillProvider>();
 
-        // YouPI Payment Gateway Service
-        services.Configure<YoupiSettings>(config.GetSection("Youpi"));
-        services.AddHttpClient<IYoupiPaymentService, YoupiPaymentService>();
+        // Direct UPI Payment & Verification Service
+        services.AddScoped<IPaymentService, UpiPaymentService>();
+        services.AddScoped<IYoupiPaymentService, YoupiPaymentService>();
 
         // Database Cleanup Service
         services.AddScoped<IDatabaseCleanupService, DatabaseCleanupService>();
