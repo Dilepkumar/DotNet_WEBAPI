@@ -113,7 +113,9 @@ public class PaymentsController : ControllerBase
         }
 
         var signature = Request.Headers["X-Youpi-Signature"].FirstOrDefault() 
+                     ?? Request.Headers["X-Gateway-Signature"].FirstOrDefault()
                      ?? Request.Headers["X-Signature"].FirstOrDefault()
+                     ?? Request.Headers["X-Hub-Signature-256"].FirstOrDefault()
                      ?? "";
 
         _logger.LogInformation("Incoming YouPI PG Webhook received. Body Length: {Length}", rawBody.Length);

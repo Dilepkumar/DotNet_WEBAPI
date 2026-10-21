@@ -34,24 +34,55 @@ public class PoolService
             return (false, "Only group Admins can record contributions for other members");
         }
 
-        // Only Admin can auto-approve! Regular member contributions always require admin approval.
-        var shouldApprove = isAdmin;
+        // Only Admin can auto-approve when AutoApprove is requested. Regular member contributions always require admin approval.
+        var shouldApprove = isAdmin && dto.AutoApprove;
         var currentMonth = IndianTime.CurrentMonth;
         var today = IndianTime.Today;
         var note = !string.IsNullOrWhiteSpace(dto.Message) ? dto.Message.Trim() : dto.TransactionRef?.Trim();
 
-        // If multiple members specified (e.g. ₹500 × 5 members or ₹8,000 / 5 members)
+        // Calculate total amount to add
+        decimal perPersonAmount = dto.Amount;
+        decimal totalAdded = dto.Amount;
+        List<int>? memberIds = null;
+
         if (dto.MemberUserIds != null && dto.MemberUserIds.Count > 0)
         {
-            var memberIds = dto.MemberUserIds.Distinct().ToList();
+            memberIds = dto.MemberUserIds.Distinct().ToList();
             var count = memberIds.Count;
 
-            decimal perPersonAmount = (dto.Mode == "total_split" && count > 0)
+            perPersonAmount = (dto.Mode == "total_split" && count > 0)
                 ? Math.Round(dto.Amount / count, 2)
                 : dto.Amount;
 
-            decimal totalAdded = perPersonAmount * count;
+            totalAdded = perPersonAmount * count;
+        }
 
+        // Target Validation: If a MonthlyPoolTarget is configured, contributions for this month cannot exceed it!
+        var group = await _db.Groups.FindAsync(groupId);
+        if (group != null && group.MonthlyPoolTarget > 0)
+        {
+            var target = group.MonthlyPoolTarget;
+            var currentMonthContribs = await _db.PoolContributions
+                .Where(c => c.GroupId == groupId && c.Status == ContributionStatus.Approved && c.PeriodMonth == currentMonth)
+                .SumAsync(c => (decimal?)c.Amount) ?? 0m;
+
+            var remainingTarget = Math.Max(0, target - currentMonthContribs);
+
+            if (remainingTarget <= 0)
+            {
+                return (false, $"Monthly pool target of ₹{target:N0} for {currentMonth} has already been fully reached! (Already collected: ₹{currentMonthContribs:N0})");
+            }
+
+            if (totalAdded > remainingTarget)
+            {
+                return (false, $"Contribution amount of ₹{totalAdded:N0} exceeds the remaining monthly target. Only ₹{remainingTarget:N0} remaining to reach the target of ₹{target:N0} (Already collected: ₹{currentMonthContribs:N0}).");
+            }
+        }
+
+        // If multiple members specified (e.g. ₹500 × 5 members or ₹8,000 / 5 members)
+        if (memberIds != null && memberIds.Count > 0)
+        {
+            var count = memberIds.Count;
             foreach (var mId in memberIds)
             {
                 _db.PoolContributions.Add(new PoolContribution
@@ -1078,6 +1109,7 @@ public class PoolService
 
             // Selected Month Budget & Spending (Scenario 2: Fixed Monthly Cycle)
             monthlyTarget = target,
+            remainingTarget = target > 0 ? Math.Max(0, target - monthContributions) : 0m,
             monthContributions,
             monthSpent,
             monthlyBudgetRemaining,

@@ -31,9 +31,10 @@ public class YoupiPaymentService : IYoupiPaymentService
 
         if (!string.IsNullOrWhiteSpace(_settings.BaseUrl))
         {
-            _http.BaseAddress = new Uri(_settings.BaseUrl);
+            var baseUri = _settings.BaseUrl.TrimEnd('/') + "/";
+            _http.BaseAddress = new Uri(baseUri);
         }
-        _http.Timeout = TimeSpan.FromSeconds(_settings.TimeoutSeconds);
+        _http.Timeout = TimeSpan.FromSeconds(_settings.TimeoutSeconds > 0 ? _settings.TimeoutSeconds : 15);
     }
 
     public async Task<(bool ok, string message, PaymentSessionResponseDto? session)> CreatePaymentSessionAsync(int userId, CreatePaymentSessionRequestDto dto, CancellationToken ct = default)
@@ -62,71 +63,64 @@ public class YoupiPaymentService : IYoupiPaymentService
         var orderId = $"RL_{prefix}_{dto.GroupId}_{userId}_{uniqueSuffix}";
         var amountPaise = (long)Math.Round(dto.Amount * 100m, MidpointRounding.AwayFromZero);
 
-        // Construct YouPI Gateway payload
-        var returnUrl = !string.IsNullOrWhiteSpace(dto.ReturnUrl) 
-            ? dto.ReturnUrl 
-            : $"{_settings.CheckoutUrl}/order-success?order_id={orderId}";
-
-        var payload = new
-        {
-            orderId,
-            amount = dto.Amount.ToString("0.00"),
-            currency = "INR",
-            customer = new
-            {
-                name = user.FullName,
-                email = user.Email,
-                phone = user.Phone ?? ""
-            },
-            metadata = new Dictionary<string, string>
-            {
-                ["groupId"] = dto.GroupId.ToString(),
-                ["payerUserId"] = userId.ToString(),
-                ["purpose"] = dto.Purpose.ToString(),
-                ["referenceId"] = dto.ReferenceId?.ToString() ?? "",
-                ["description"] = dto.Description ?? ""
-            },
-            returnUrl
-        };
-
-        string checkoutUrl;
+        string checkoutUrl = !string.IsNullOrWhiteSpace(_settings.CheckoutUrl) ? $"{_settings.CheckoutUrl.TrimEnd('/')}/pay/{orderId}" : "";
         string? youpiPaymentId = null;
 
-        try
+        var hasExternalGateway = !string.IsNullOrWhiteSpace(_settings.BaseUrl) &&
+                                 Uri.TryCreate(_settings.BaseUrl, UriKind.Absolute, out _) &&
+                                 !_settings.BaseUrl.Contains("gateway.roomledger.in") &&
+                                 !_settings.BaseUrl.Contains("localhost");
+
+        if (hasExternalGateway)
         {
-            _logger.LogInformation("Creating YouPI PG payment order {OrderId} for ₹{Amount}...", orderId, dto.Amount);
-            
-            // Add custom merchant header
-            using var req = new HttpRequestMessage(HttpMethod.Post, "/api/v1/payments")
+            try
             {
-                Content = JsonContent.Create(payload)
-            };
-            req.Headers.Add("X-Merchant-Id", _settings.MerchantId);
-
-            var response = await _http.SendAsync(req, ct);
-            if (response.IsSuccessStatusCode)
-            {
-                var result = await response.Content.ReadFromJsonAsync<JsonElement>(cancellationToken: ct);
-                checkoutUrl = result.TryGetProperty("checkoutUrl", out var cUrl) 
-                    ? cUrl.GetString() ?? $"{_settings.CheckoutUrl}/pay/{orderId}"
-                    : $"{_settings.CheckoutUrl}/pay/{orderId}";
-
-                if (result.TryGetProperty("paymentId", out var pId))
+                var payload = new
                 {
-                    youpiPaymentId = pId.GetString();
+                    orderId,
+                    amount = dto.Amount.ToString("0.00"),
+                    currency = "INR",
+                    customer = new
+                    {
+                        name = user.FullName,
+                        email = user.Email,
+                        phone = user.Phone ?? ""
+                    },
+                    metadata = new Dictionary<string, string>
+                    {
+                        ["groupId"] = dto.GroupId.ToString(),
+                        ["payerUserId"] = userId.ToString(),
+                        ["purpose"] = dto.Purpose.ToString(),
+                        ["referenceId"] = dto.ReferenceId?.ToString() ?? "",
+                        ["description"] = dto.Description ?? ""
+                    }
+                };
+
+                _logger.LogInformation("Creating payment order {OrderId} on external gateway for ₹{Amount}...", orderId, dto.Amount);
+                using var req = new HttpRequestMessage(HttpMethod.Post, "api/v1/payments")
+                {
+                    Content = JsonContent.Create(payload)
+                };
+                req.Headers.Add("X-Merchant-Id", _settings.MerchantId);
+
+                var response = await _http.SendAsync(req, ct);
+                if (response.IsSuccessStatusCode)
+                {
+                    var result = await response.Content.ReadFromJsonAsync<JsonElement>(cancellationToken: ct);
+                    if (result.TryGetProperty("checkoutUrl", out var cUrl))
+                    {
+                        checkoutUrl = cUrl.GetString() ?? checkoutUrl;
+                    }
+                    if (result.TryGetProperty("paymentId", out var pId))
+                    {
+                        youpiPaymentId = pId.GetString();
+                    }
                 }
             }
-            else
+            catch (Exception ex)
             {
-                var err = await response.Content.ReadAsStringAsync(ct);
-                _logger.LogWarning("YouPI PG returned {Status}: {Error}. Falling back to standard checkout URL format.", response.StatusCode, err);
-                checkoutUrl = $"{_settings.CheckoutUrl}/pay/{orderId}";
+                _logger.LogWarning(ex, "Could not reach external gateway at {BaseUrl}. Continuing with direct RoomLedger payment.", _settings.BaseUrl);
             }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Could not reach YouPI PG at {BaseUrl}. Generating deterministic local checkout URL for order {OrderId}.", _settings.BaseUrl, orderId);
-            checkoutUrl = $"{_settings.CheckoutUrl}/pay/{orderId}";
         }
 
         // Save transaction to RoomLedger database
@@ -222,8 +216,17 @@ public class YoupiPaymentService : IYoupiPaymentService
             return (false, "Invalid JSON payload");
         }
 
-        var orderId = root.TryGetProperty("orderId", out var o1) ? o1.GetString()
-            : root.TryGetProperty("order_id", out var o2) ? o2.GetString() : null;
+        var target = root.TryGetProperty("data", out var dElem) && dElem.ValueKind == JsonValueKind.Object
+            ? dElem
+            : root.TryGetProperty("payload", out var pElem) && pElem.ValueKind == JsonValueKind.Object
+                ? pElem
+                : root;
+
+        var orderId = target.TryGetProperty("orderId", out var o1) ? o1.GetString()
+            : target.TryGetProperty("order_id", out var o2) ? o2.GetString()
+            : target.TryGetProperty("client_txn_id", out var o3) ? o3.GetString()
+            : root.TryGetProperty("orderId", out var ro1) ? ro1.GetString()
+            : root.TryGetProperty("order_id", out var ro2) ? ro2.GetString() : null;
 
         if (string.IsNullOrWhiteSpace(orderId))
             return (false, "Missing order_id in webhook");
@@ -239,10 +242,19 @@ public class YoupiPaymentService : IYoupiPaymentService
             return (false, $"Order {orderId} not found");
         }
 
-        var statusStr = root.TryGetProperty("status", out var s) ? s.GetString()?.ToUpperInvariant() : null;
-        var utr = root.TryGetProperty("utr", out var u) ? u.GetString() : null;
-        var payerVpa = root.TryGetProperty("payerVpa", out var v1) ? v1.GetString()
-            : root.TryGetProperty("payer_vpa", out var v2) ? v2.GetString() : null;
+        var statusStr = target.TryGetProperty("status", out var s) ? s.GetString()?.ToUpperInvariant()
+            : target.TryGetProperty("txn_status", out var ts) ? ts.GetString()?.ToUpperInvariant()
+            : root.TryGetProperty("status", out var rs) ? rs.GetString()?.ToUpperInvariant() : null;
+
+        var utr = target.TryGetProperty("utr", out var u) ? u.GetString()
+            : target.TryGetProperty("bank_ref_num", out var b1) ? b1.GetString()
+            : target.TryGetProperty("upi_txn_id", out var b2) ? b2.GetString()
+            : root.TryGetProperty("utr", out var ru) ? ru.GetString() : null;
+
+        var payerVpa = target.TryGetProperty("payerVpa", out var v1) ? v1.GetString()
+            : target.TryGetProperty("payer_vpa", out var v2) ? v2.GetString()
+            : root.TryGetProperty("payerVpa", out var rv1) ? rv1.GetString()
+            : root.TryGetProperty("payer_vpa", out var rv2) ? rv2.GetString() : null;
 
         _logger.LogInformation("Processing YouPI webhook for order {OrderId}. Status: {Status}, UTR: {Utr}", orderId, statusStr, utr);
 
@@ -371,8 +383,40 @@ public class YoupiPaymentService : IYoupiPaymentService
         var appInfo = !string.IsNullOrWhiteSpace(tx.PaymentApp) ? $" via {tx.PaymentApp}" : "";
         var utrInfo = !string.IsNullOrWhiteSpace(tx.BankUtr) && tx.BankUtr != "Direct UPI" ? $" (UTR: {tx.BankUtr})" : "";
 
-        // Manual UTR submission -> Mark as Processing (Awaiting Group Admin Bank Statement Cross-Check)
-        // DO NOT fulfill domain action yet! Bill/pool remains pending until Admin verifies in bank or Webhook succeeds!
+        // Direct Settlement:
+        // 1. Friend-to-friend IOU Settle-Up: settles debt directly between the two flatmates.
+        // 2. Admin paying their own share: no self-approval needed.
+        if (tx.Purpose == PaymentPurpose.IouSettlement || (isPayer && isAdmin))
+        {
+            tx.Status = PaymentStatus.Success;
+            tx.VerifiedAt = IndianTime.Now;
+
+            await ApplyDomainFulfillmentAsync(tx, ct);
+
+            // Send push notification to payee
+            try
+            {
+                if (tx.Purpose == PaymentPurpose.IouSettlement && tx.ReferenceId.HasValue)
+                {
+                    await _push.SendPushToUsersAsync(
+                        new List<int> { tx.ReferenceId.Value },
+                        "🎉 IOU Settle-Up Received",
+                        $"{tx.PayerName ?? tx.PayerUser.FullName} settled ₹{tx.Amount:N0} with you{appInfo}{utrInfo}.",
+                        "/iou"
+                    );
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to send payee notification for IOU settlement {OrderId}", tx.YoupiOrderId);
+            }
+
+            await _db.SaveChangesAsync(ct);
+            return (true, $"Payment verified & settled successfully (UTR: {tx.BankUtr}).", MapToDto(tx));
+        }
+
+        // Shared expense verification (Pool / Bills / Electricity paid by member to Admin):
+        // Mark as Processing (Awaiting Group Admin Bank Statement Cross-Check)
         tx.Status = PaymentStatus.Processing;
         tx.VerifiedAt = null;
 
@@ -406,12 +450,18 @@ public class YoupiPaymentService : IYoupiPaymentService
     public async Task<List<PaymentTransactionDto>> GetPendingApprovalsAsync(int adminUserId, int groupId, CancellationToken ct = default)
     {
         var isAdmin = await _db.GroupMembers.AnyAsync(m => m.GroupId == groupId && m.UserId == adminUserId && m.Role == MemberRole.Admin && m.Status == MemberStatus.Active, ct);
-        if (!isAdmin)
-            return new List<PaymentTransactionDto>();
 
-        var pending = await _db.PaymentTransactions
+        var pendingQuery = _db.PaymentTransactions
             .Include(t => t.PayerUser)
-            .Where(t => t.GroupId == groupId && t.Status == PaymentStatus.Processing)
+            .Where(t => t.GroupId == groupId && t.Status == PaymentStatus.Processing);
+
+        if (!isAdmin)
+        {
+            // Non-admin can only see IOU settlements where they are the recipient
+            pendingQuery = pendingQuery.Where(t => t.Purpose == PaymentPurpose.IouSettlement && t.ReferenceId == adminUserId);
+        }
+
+        var pending = await pendingQuery
             .OrderByDescending(t => t.CreatedAt)
             .ToListAsync(ct);
 
@@ -429,8 +479,10 @@ public class YoupiPaymentService : IYoupiPaymentService
             return (false, "Payment transaction not found", null);
 
         var isAdmin = await _db.GroupMembers.AnyAsync(m => m.GroupId == tx.GroupId && m.UserId == adminUserId && m.Role == MemberRole.Admin && m.Status == MemberStatus.Active, ct);
-        if (!isAdmin)
-            return (false, "Only group admins can approve or reject payments", null);
+        var isCreditor = tx.Purpose == PaymentPurpose.IouSettlement && tx.ReferenceId == adminUserId;
+
+        if (!isAdmin && !isCreditor)
+            return (false, "Only group admins or the payment recipient can approve or reject payments", null);
 
         if (tx.Status == PaymentStatus.Success)
             return (false, "Transaction has already been approved", MapToDto(tx));
