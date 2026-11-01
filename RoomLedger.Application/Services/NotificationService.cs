@@ -24,7 +24,14 @@ public class NotificationService
     public async Task PushAsync(int userId, int? groupId, string title, string message, string type, string? customTargetUrl = null)
     {
         _db.Notifications.Add(new Notification
-        { UserId = userId, GroupId = groupId, Title = title, Message = message, Type = type });
+        { 
+            UserId = userId, 
+            GroupId = groupId, 
+            Title = title, 
+            Message = message, 
+            Type = type,
+            IsActive = true
+        });
         await _db.SaveChangesAsync();
 
         try
@@ -43,16 +50,36 @@ public class NotificationService
     public async Task<List<NotificationDto>> GetMineAsync()
     {
         return await _db.Notifications
-            .Where(n => n.UserId == _me.UserId)
+            .Where(n => n.UserId == _me.UserId && n.IsActive)
             .OrderByDescending(n => n.CreatedAt).Take(50)
             .Select(n => new NotificationDto(n.Id, n.Title, n.Message, n.Type, n.IsRead, n.CreatedAt))
             .ToListAsync();
     }
 
+    public async Task<bool> MarkOneReadAsync(int id)
+    {
+        var n = await _db.Notifications
+            .FirstOrDefaultAsync(n => n.Id == id && n.UserId == _me.UserId && n.IsActive);
+        if (n == null) return false;
+        n.IsRead = true;
+        await _db.SaveChangesAsync();
+        return true;
+    }
+
+    public async Task<bool> DeleteAsync(int id)
+    {
+        var n = await _db.Notifications
+            .FirstOrDefaultAsync(n => n.Id == id && n.UserId == _me.UserId && n.IsActive);
+        if (n == null) return false;
+        n.IsActive = false;
+        await _db.SaveChangesAsync();
+        return true;
+    }
+
     public async Task MarkAllReadAsync()
     {
         var unread = await _db.Notifications
-            .Where(n => n.UserId == _me.UserId && !n.IsRead).ToListAsync();
+            .Where(n => n.UserId == _me.UserId && n.IsActive && !n.IsRead).ToListAsync();
         foreach (var n in unread) n.IsRead = true;
         await _db.SaveChangesAsync();
     }

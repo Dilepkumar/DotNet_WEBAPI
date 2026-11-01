@@ -11,6 +11,7 @@ public class Notification
     public string Message { get; set; } = default!;
     public string Type { get; set; } = default!;
     public bool IsRead { get; set; }
+    public bool IsActive { get; set; } = true;
     public DateTime CreatedAt { get; set; } = IndianTime.Now;
     public User User { get; set; } = default!;
 }

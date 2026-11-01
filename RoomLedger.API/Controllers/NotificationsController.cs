@@ -28,7 +28,7 @@ namespace RoomLedger.API.Controllers
             => Ok(new
             {
                 count = await _db.Notifications
-                    .CountAsync(n => n.UserId == _me && !n.IsRead)
+                    .CountAsync(n => n.UserId == _me && n.IsActive && !n.IsRead)
             });
 
         [HttpPost("mark-read")]
@@ -36,6 +36,21 @@ namespace RoomLedger.API.Controllers
         {
             await _notifications.MarkAllReadAsync();
             return Ok(new { message = "All notifications marked read" });
+        }
+
+        [HttpPost("{id:int}/read")]
+        [HttpPut("{id:int}/read")]
+        public async Task<IActionResult> MarkOneRead(int id)
+        {
+            var ok = await _notifications.MarkOneReadAsync(id);
+            return ok ? Ok(new { message = "Marked as read" }) : NotFound(new { message = "Notification not found" });
+        }
+
+        [HttpDelete("{id:int}")]
+        public async Task<IActionResult> Delete(int id)
+        {
+            var ok = await _notifications.DeleteAsync(id);
+            return ok ? Ok(new { message = "Notification deleted" }) : NotFound(new { message = "Notification not found" });
         }
 
         [HttpPost("push/subscribe")]

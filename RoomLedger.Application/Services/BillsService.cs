@@ -148,48 +148,6 @@ public class BillsService
     // ───────────── MONTH VIEW: checklist of who paid which bill ─────────────
     public async Task<object> GetMonthAsync(int groupId, string billingMonth)
     {
-        // Auto-generate splits if active recurring bills exist for the group but don't have splits for this month
-        var activeBills = await _db.RecurringBills
-            .Where(b => b.GroupId == groupId && b.IsActive)
-            .ToListAsync();
-
-        if (activeBills.Count > 0)
-        {
-            var existingBillIds = await _db.BillSplits
-                .Where(s => s.GroupId == groupId && s.BillingMonth == billingMonth)
-                .Select(s => s.RecurringBillId)
-                .Distinct()
-                .ToListAsync();
-
-            var ungeneratedBills = activeBills.Where(b => !existingBillIds.Contains(b.Id) && !IsDynamicUtilityBill(b.BillName)).ToList();
-            if (ungeneratedBills.Count > 0)
-            {
-                var memberIds = await _db.GroupMembers
-                    .Where(m => m.GroupId == groupId && m.Status == MemberStatus.Active)
-                    .Select(m => m.UserId).ToListAsync();
-
-                if (memberIds.Count > 0)
-                {
-                    foreach (var bill in ungeneratedBills)
-                    {
-                        var perHead = Math.Round(bill.Amount / memberIds.Count, 2, MidpointRounding.AwayFromZero);
-                        foreach (var uid in memberIds)
-                        {
-                            _db.BillSplits.Add(new BillSplit
-                            {
-                                RecurringBillId = bill.Id,
-                                GroupId = groupId,
-                                BillingMonth = billingMonth,
-                                UserId = uid,
-                                ShareAmount = perHead
-                            });
-                        }
-                    }
-                    await _db.SaveChangesAsync();
-                }
-            }
-        }
-
         var rows = await _db.BillSplits
             .Where(s => s.GroupId == groupId && s.BillingMonth == billingMonth && s.RecurringBill != null && s.RecurringBill.IsActive)
             .Select(s => new
