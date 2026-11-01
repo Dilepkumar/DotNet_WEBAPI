@@ -47,16 +47,16 @@ public class DashboardService
         var spent = allExpenses.Sum(e => e.TotalAmount);
         var poolBalance = Math.Max(0, contributed - spent);
 
-        var poolSpentThisMonth = allExpenses
-            .Where(e => e.ExpenseDate.Year == now.Year && e.ExpenseDate.Month == now.Month)
-            .Sum(e => e.TotalAmount);
+        var selectedDate = !string.IsNullOrWhiteSpace(month) && DateOnly.TryParseExact(month + "-01", "yyyy-MM-dd", out var parsedDate) ? parsedDate : DateOnly.FromDateTime(now);
+        var isFilteringSpecificMonth = !string.IsNullOrWhiteSpace(month) && !month.Equals("all", StringComparison.OrdinalIgnoreCase);
 
+        var poolSpentThisMonth = allExpenses.Where(e => e.ExpenseDate.Year == selectedDate.Year && e.ExpenseDate.Month == selectedDate.Month).Sum(e => e.TotalAmount);
         double poolRemainingPct = monthlyPoolTarget > 0
             ? Math.Max(0, Math.Min(100, Math.Round((double)(poolBalance / monthlyPoolTarget) * 100, 1))) : 100.0;
 
         // 3. Category & Item Breakdowns (Current Month vs All-Time vs Monthwise)
         var currentMonthExpenses = allExpenses
-            .Where(e => e.ExpenseDate.Year == now.Year && e.ExpenseDate.Month == now.Month)
+            .Where(e => e.ExpenseDate.Year == selectedDate.Year && e.ExpenseDate.Month == selectedDate.Month)
             .ToList();
 
         var currentCategories = ExtractCategories(currentMonthExpenses);
@@ -155,11 +155,20 @@ public class DashboardService
         var availableMonths = monthsList.Select(m => m.Key).OrderByDescending(k => k).ToList();
 
         // 4. Recent Pool Expenses with full timestamp, item details, and recorder name
-        var recentExpensesEntities = await _db.PoolExpenses
+        var recentExpensesQuery = _db.PoolExpenses
             .Include(e => e.Items)
-            .Where(e => e.GroupId == groupId && !e.IsVoided)
-            .OrderByDescending(e => e.Id)
-            .Take(5)
+            .Where(e => e.GroupId == groupId && !e.IsVoided);
+
+        if (isFilteringSpecificMonth)
+        {
+            recentExpensesQuery = recentExpensesQuery
+                .Where(e => e.ExpenseDate.Year == selectedDate.Year && e.ExpenseDate.Month == selectedDate.Month);
+        }
+
+        var recentExpensesEntities = await recentExpensesQuery
+            .OrderByDescending(e => e.ExpenseDate)
+            .ThenByDescending(e => e.Id)
+            .Take(15)
             .ToListAsync();
 
         var involvedUserIds = recentExpensesEntities
@@ -198,9 +207,12 @@ public class DashboardService
         }).ToList();
 
         // 5. Fixed Recurring Bills
+        var targetBillsMonth = !string.IsNullOrWhiteSpace(month) && !month.Equals("all", StringComparison.OrdinalIgnoreCase)
+            ? month
+            : currentMonth;
         var allSplits = await _db.BillSplits
             .Include(s => s.RecurringBill)
-            .Where(s => s.GroupId == groupId && s.BillingMonth == currentMonth && s.RecurringBill != null && s.RecurringBill.IsActive)
+            .Where(s => s.GroupId == groupId && s.BillingMonth == targetBillsMonth && s.RecurringBill != null && s.RecurringBill.IsActive)
             .ToListAsync();
 
         var pendingBillsCount = allSplits.Where(s => !s.IsPaid).Select(s => s.RecurringBillId).Distinct().Count();

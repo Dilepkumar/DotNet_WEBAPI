@@ -480,7 +480,8 @@ public class ElectricityBillService
             .Where(a => a.IsActive &&
                         a.NextCheckAt != null &&
                         a.NextCheckAt <= now &&
-                        (a.MonitoringStatus == "MONITORING" || a.MonitoringStatus == "BILL_GENERATED"))
+                        a.MonitoringStatus != "INACTIVE" &&
+                        a.MonitoringStatus != "INVALID_CONSUMER")
             .ToListAsync(ct);
 
         _logger.LogInformation("ElectricityBillMonitoringJob: Found {Count} due accounts to process at {Time}", dueAccounts.Count, now);

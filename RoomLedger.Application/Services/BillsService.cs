@@ -16,6 +16,13 @@ public class BillsService
         _notifications = notifications;
     }
 
+    public static bool IsDynamicUtilityBill(string? billName)
+    {
+        if (string.IsNullOrWhiteSpace(billName)) return false;
+        var n = billName.ToLowerInvariant();
+        return n.Contains("electr") || n.Contains("tgspdcl") || n.Contains("power") || n.Contains("curren");
+    }
+
     // ───────────────────── CREATE BILL CONTAINER ─────────────────────
     public async Task<(bool ok, string message, object? result)> CreateAsync(int groupId, int userId, BillDto dto)
     {
@@ -122,6 +129,7 @@ public class BillsService
         foreach (var bill in bills)
         {
             if (existing.Contains(bill.Id)) continue;
+            if (IsDynamicUtilityBill(bill.BillName)) continue; // Utility meter bills vary by reading, do not duplicate old amounts
             var perHead = Math.Round(bill.Amount / memberIds.Count, 2, MidpointRounding.AwayFromZero);
             foreach (var uid in memberIds)
                 _db.BillSplits.Add(new BillSplit
@@ -153,7 +161,7 @@ public class BillsService
                 .Distinct()
                 .ToListAsync();
 
-            var ungeneratedBills = activeBills.Where(b => !existingBillIds.Contains(b.Id)).ToList();
+            var ungeneratedBills = activeBills.Where(b => !existingBillIds.Contains(b.Id) && !IsDynamicUtilityBill(b.BillName)).ToList();
             if (ungeneratedBills.Count > 0)
             {
                 var memberIds = await _db.GroupMembers

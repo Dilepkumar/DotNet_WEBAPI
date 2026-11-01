@@ -22,8 +22,8 @@ public static class HangfireJobScheduler
             "0 2 * * *",
             new RecurringJobOptions { TimeZone = IndianTime.Zone });
 
-        // Enqueue an immediate cleanup run on startup to purge existing backlog
-        BackgroundJob.Enqueue<IDatabaseCleanupService>(
-            service => service.DoCleanupAsync(CancellationToken.None));
+        // Trigger the recurring jobs on startup without piling up duplicate background jobs
+        RecurringJob.TriggerJob("database-cleanup");
+        RecurringJob.TriggerJob("electricity-bill-monitoring");
     }
 }

@@ -45,14 +45,6 @@ public class BillsController : ControllerBase
     public async Task<IActionResult> Month(int groupId, string billingMonth)
         => Ok(await _bills.GetMonthAsync(groupId, billingMonth));
 
-    [HttpPost("generate-next-month")]
-    public async Task<IActionResult> GenerateNextMonth(int groupId)
-    {
-        var nextMonth = IndianTime.Now.AddMonths(1).ToString("yyyy-MM");
-        var (ok, msg) = await _bills.GenerateSplitsAsync(groupId, Me, nextMonth);
-        return ok ? Ok(new { message = msg }) : BadRequest(new { message = msg });
-    }
-
     [HttpPost("splits/{splitId:int}/toggle-paid")]
     public async Task<IActionResult> Toggle(int groupId, int splitId)
     {

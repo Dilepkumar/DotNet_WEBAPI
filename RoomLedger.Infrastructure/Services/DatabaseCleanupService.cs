@@ -1,3 +1,4 @@
+using Hangfire;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using RoomLedger.Application.Common.Interfaces;
@@ -6,6 +7,8 @@ namespace RoomLedger.Infrastructure.Services;
 
 public interface IDatabaseCleanupService
 {
+    [DisableConcurrentExecution(timeoutInSeconds: 300)]
+    [AutomaticRetry(Attempts = 2)]
     Task DoCleanupAsync(CancellationToken cancellationToken = default);
 }
 
@@ -20,38 +23,41 @@ public class DatabaseCleanupService : IDatabaseCleanupService
         _logger = logger;
     }
 
+    [DisableConcurrentExecution(timeoutInSeconds: 300)]
+    [AutomaticRetry(Attempts = 2)]
     public async Task DoCleanupAsync(CancellationToken cancellationToken = default)
     {
         _logger.LogInformation("Hangfire Database Cleanup Job starting...");
 
         var now = DateTime.UtcNow;
-
-        // 1. Delete expired or already used OTP codes
-        var expiredOtps = await _db.OtpCodes.Where(o => o.ExpiresAt < now || o.IsUsed).ToListAsync(cancellationToken);
-
-        if (expiredOtps.Count > 0)
-        {
-            _db.OtpCodes.RemoveRange(expiredOtps);
-        }
-
-        // 2. Delete expired refresh tokens OR revoked tokens older than 7 days
         var staleRevokedCutoff = now.AddDays(-7);
-        var staleTokens = await _db.RefreshTokens.Where(r => r.ExpiresAt < now || (r.RevokedAt != null && r.RevokedAt < staleRevokedCutoff)).ToListAsync(cancellationToken);
 
-        if (staleTokens.Count > 0)
+        try
         {
-            _db.RefreshTokens.RemoveRange(staleTokens);
-        }
+            // Direct set-based SQL deletion: avoids loading entities into memory, avoids change tracking,
+            // and eliminates DbUpdateConcurrencyException when records are deleted concurrently.
+            var deletedOtps = await _db.OtpCodes.Where(o => o.ExpiresAt < now || o.IsUsed).ExecuteDeleteAsync(cancellationToken);
 
-        if (expiredOtps.Count > 0 || staleTokens.Count > 0)
-        {
-            await _db.SaveChangesAsync(cancellationToken);
-            _logger.LogInformation("Database cleanup executed: removed {OtpCount} expired OTPs and {TokenCount} stale refresh tokens.",
-                expiredOtps.Count, staleTokens.Count);
+            var deletedTokens = await _db.RefreshTokens.Where(r => r.ExpiresAt < now || (r.RevokedAt != null && r.RevokedAt < staleRevokedCutoff)).ExecuteDeleteAsync(cancellationToken);
+
+            if (deletedOtps > 0 || deletedTokens > 0)
+            {
+                _logger.LogInformation("Database cleanup executed: removed {OtpCount} expired OTPs and {TokenCount} stale refresh tokens.",
+                    deletedOtps, deletedTokens);
+            }
+            else
+            {
+                _logger.LogInformation("Database cleanup completed: no expired OTPs or stale refresh tokens to purge.");
+            }
         }
-        else
+        catch (DbUpdateConcurrencyException ex)
         {
-            _logger.LogInformation("Database cleanup completed: no expired OTPs or stale refresh tokens to purge.");
+            _logger.LogWarning(ex, "Concurrency conflict during database cleanup; records were already modified or purged.");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to execute database cleanup job.");
+            throw;
         }
     }
 }
