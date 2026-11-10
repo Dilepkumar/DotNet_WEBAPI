@@ -389,7 +389,7 @@ public class ElectricityBillService
 
         if (bill.RecurringBillId.HasValue)
         {
-            var billingMonth = (bill.BillPeriod?.Length >= 7) ? bill.BillPeriod.Substring(0, 7) : IndianTime.CurrentMonth;
+            var billingMonth = GetBillingMonthFromBill(bill);
             splits = await (
                 from bs in _db.BillSplits
                 join u in _db.Users on bs.UserId equals u.Id
@@ -402,22 +402,6 @@ public class ElectricityBillService
                     bs.PaidAt,
                     bs.Id)
             ).ToListAsync(ct);
-
-            if (splits.Count == 0)
-            {
-                splits = await (
-                    from bs in _db.BillSplits
-                    join u in _db.Users on bs.UserId equals u.Id
-                    where bs.RecurringBillId == bill.RecurringBillId.Value
-                    select new ElectricitySplitItemDto(
-                        u.Id,
-                        u.FullName,
-                        bs.ShareAmount,
-                        bs.IsPaid,
-                        bs.PaidAt,
-                        bs.Id)
-                ).ToListAsync(ct);
-            }
         }
 
         // Resilient fallback preview if splits table had no rows
@@ -749,26 +733,8 @@ public class ElectricityBillService
 
         if (activeMembers.Count == 0) return;
 
-        // Standardize billingMonth to yyyy-MM (e.g. 2026-10) matching BillsService and Dashboard
-        string billingMonth;
-        if (bill.BillDate.HasValue)
-        {
-            billingMonth = bill.BillDate.Value.ToString("yyyy-MM");
-        }
-        else if (!string.IsNullOrWhiteSpace(bill.BillPeriod) &&
-                 DateTime.TryParseExact(bill.BillPeriod.Trim(), new[] { "MMM yyyy", "MMMM yyyy", "yyyy-MM", "MM/yyyy" },
-                     System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out var parsedMonth))
-        {
-            billingMonth = parsedMonth.ToString("yyyy-MM");
-        }
-        else if (bill.DueDate.HasValue)
-        {
-            billingMonth = bill.DueDate.Value.ToString("yyyy-MM");
-        }
-        else
-        {
-            billingMonth = IndianTime.Now.ToString("yyyy-MM");
-        }
+        // Standardize billingMonth to yyyy-MM (e.g. 2026-11) matching BillsService and Dashboard
+        var billingMonth = GetBillingMonthFromBill(bill);
 
         var dueDay = bill.DueDate?.Day ?? 15;
         var shortBiller = (bill.BillerName ?? account.BillerName ?? "").Contains("TGSPDCL", StringComparison.OrdinalIgnoreCase)
@@ -1010,6 +976,37 @@ public class ElectricityBillService
             bill.CreatedAt,
             bill.IsPaidAtProvider,
             bill.PaidAtProviderDate);
+    }
+
+    private static string GetBillingMonthFromBill(ElectricityBill bill)
+    {
+        if (bill.BillDate.HasValue)
+        {
+            return bill.BillDate.Value.ToString("yyyy-MM");
+        }
+        if (!string.IsNullOrWhiteSpace(bill.BillPeriod))
+        {
+            var trimmed = bill.BillPeriod.Trim();
+            if (DateTime.TryParseExact(trimmed, new[] { "MMM yyyy", "MMMM yyyy", "yyyy-MM", "MM/yyyy", "MMMM, yyyy", "MMM, yyyy" },
+                System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out var parsedMonth))
+            {
+                return parsedMonth.ToString("yyyy-MM");
+            }
+            if (DateTime.TryParse(trimmed, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out var parsedGeneral))
+            {
+                return parsedGeneral.ToString("yyyy-MM");
+            }
+            var mYearMonth = System.Text.RegularExpressions.Regex.Match(trimmed, @"\b(20\d{2})-(0[1-9]|1[0-2])\b");
+            if (mYearMonth.Success)
+            {
+                return mYearMonth.Value;
+            }
+        }
+        if (bill.DueDate.HasValue)
+        {
+            return bill.DueDate.Value.ToString("yyyy-MM");
+        }
+        return IndianTime.Now.ToString("yyyy-MM");
     }
 
     // ───────────────────── NEW BILL EMAIL NOTIFICATION (DB TEMPLATE) ─────────────────────

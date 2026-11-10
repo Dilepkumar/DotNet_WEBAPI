@@ -117,9 +117,7 @@ public class TgspdclElectricityBillProvider : IElectricityBillProvider
             }
 
             // Extract Target Element (either root or root.data)
-            var dataEl = root.TryGetProperty("data", out var dEl) && dEl.ValueKind == JsonValueKind.Object
-                ? dEl
-                : root;
+            var dataEl = root.TryGetProperty("data", out var dEl) && dEl.ValueKind == JsonValueKind.Object ? dEl : root;
 
             // Map Fields
             var rawCustName = GetStringProp(dataEl, "CUSTOMERNAME", "consName")?.Trim();

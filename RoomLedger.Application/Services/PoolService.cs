@@ -1018,9 +1018,32 @@ public class PoolService
                 count = g.Count()
             }).OrderByDescending(i => i.total).ToList();
 
+        // Out-of-Pocket Reimbursements: fetch all unreimbursed expenses across all months + member expenses in current period
+        var oopExpenses = await _db.PoolExpenses
+            .Where(e => e.GroupId == groupId && !e.IsVoided && e.PaidByUserId.HasValue &&
+                (!e.IsReimbursed || (startOfMonth.HasValue && endOfMonth.HasValue ? (e.ExpenseDate >= startOfMonth.Value && e.ExpenseDate <= endOfMonth.Value) : true)))
+            .Select(e => new
+            {
+                e.Id,
+                e.TotalAmount,
+                e.Description,
+                e.ExpenseDate,
+                e.ReceiptUrl,
+                e.Category,
+                e.PaidByUserId,
+                e.PayerName,
+                e.IsReimbursed,
+                Items = e.Items.Select(i => new
+                {
+                    i.Id,
+                    i.ItemName,
+                    i.Amount
+                }).ToList()
+            })
+            .ToListAsync();
+
         // Out-of-Pocket Reimbursement Summary
-        var outOfPocketSummary = allExpenses
-            .Where(e => e.PaidByUserId.HasValue)
+        var outOfPocketSummary = oopExpenses
             .GroupBy(e => e.PaidByUserId!.Value)
             .Select(g =>
             {
@@ -1033,6 +1056,18 @@ public class PoolService
                 var isFullyReimbursed = pendingReimbursement == 0;
                 var memberStat = memberStatuses.FirstOrDefault(m => m.userId == pUserId);
                 var userPendingContribution = memberStat != null ? memberStat.pendingAmount : 0m;
+                var expenses = g.OrderByDescending(x => x.ExpenseDate).ThenByDescending(x => x.Id).Select(x => new
+                {
+                    id = x.Id,
+                    description = x.Description,
+                    totalAmount = x.TotalAmount,
+                    expenseDate = x.ExpenseDate.ToString("yyyy-MM-dd"),
+                    category = x.Category,
+                    receiptUrl = x.ReceiptUrl,
+                    isReimbursed = x.IsReimbursed,
+                    items = x.Items.Select(i => new { i.Id, itemName = i.ItemName, amount = i.Amount }).ToList()
+                }).ToList();
+
                 return new
                 {
                     userId = pUserId,
@@ -1044,7 +1079,8 @@ public class PoolService
                     pendingCount,
                     userPendingContribution,
                     expenseCount = g.Count(),
-                    status = isFullyReimbursed ? "Reimbursed from Pool ✓" : $"Pending Reimbursement (₹{pendingReimbursement:N0})"
+                    status = isFullyReimbursed ? "Reimbursed from Pool ✓" : $"Pending Reimbursement (₹{pendingReimbursement:N0})",
+                    expenses
                 };
             })
             .OrderByDescending(x => x.pendingReimbursement)
@@ -1486,7 +1522,9 @@ public class PoolService
                 ContributedOn = today,
                 PeriodMonth = currentMonth,
                 TransactionRef = "OUT-OF-POCKET-OFFSET",
-                Message = $"Offset from out-of-pocket expense ({expensesToReimburse.Count} item(s))",
+                Message = expensesToReimburse.Count == 1
+                    ? $"Offset from expense: {expensesToReimburse[0].Description} (₹{totalReimbursement:N2})"
+                    : $"Offset from out-of-pocket expense ({expensesToReimburse.Count} item(s))",
                 Status = ContributionStatus.Approved,
                 ApprovedByUserId = currentUserId,
                 ApprovedAt = IndianTime.Now
@@ -1501,7 +1539,10 @@ public class PoolService
             }
 
             var userName = await _db.Users.Where(u => u.Id == targetUserId).Select(u => u.FullName).FirstOrDefaultAsync() ?? "Roommate";
-            return (true, $"Successfully cut ₹{totalReimbursement:N0} from {userName}'s monthly contribution and marked expenses as settled.", totalReimbursement);
+            var successMsg = expensesToReimburse.Count == 1
+                ? $"Successfully cut ₹{totalReimbursement:N2} from {userName}'s monthly contribution for '{expensesToReimburse[0].Description}'."
+                : $"Successfully cut ₹{totalReimbursement:N2} from {userName}'s monthly contribution and marked {expensesToReimburse.Count} expenses as settled.";
+            return (true, successMsg, totalReimbursement);
         }
         else
         {
@@ -1536,7 +1577,10 @@ public class PoolService
                 await _audit.LogAsync("PoolExpense", exp.Id, "ReimburseOutOfPocket", null, new { exp.TotalAmount, exp.PaidByUserId, ReimbursedByUserId = currentUserId, Mode = "cash" }, currentUserId, "Reimbursed from Central Room Pool");
             }
 
-            return (true, $"Successfully returned ₹{totalReimbursement:N0} from central pool for {expensesToReimburse.Count} expense(s).", totalReimbursement);
+            var cashSuccessMsg = expensesToReimburse.Count == 1
+                ? $"Successfully returned ₹{totalReimbursement:N2} from central pool for '{expensesToReimburse[0].Description}'."
+                : $"Successfully returned ₹{totalReimbursement:N2} from central pool for {expensesToReimburse.Count} expense(s).";
+            return (true, cashSuccessMsg, totalReimbursement);
         }
     }
 
